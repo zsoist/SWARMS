@@ -202,6 +202,17 @@ def estado():
             }
 
     sal = {}
+    # El general no es una pieza que se sondee: es quien dirige desde Claude
+    # Code. Aparece en el visor porque el humano necesita saber quién decide,
+    # y si la llave de Anthropic está apagada (que es el estado por defecto).
+    _fable = os.environ.get('FABLE_ENABLED', '0').strip() == '1'
+    sal['general'] = {
+        'ok': True,
+        'detalle': ('general: Claude dirige desde Claude Code — planifica, cura y '
+                    'verifica; ' + ('la API de Anthropic está HABILITADA (gasta)'
+                                    if _fable else
+                                    'sin gastar API (FABLE_ENABLED=0)')),
+    }
     sal['planificador'] = _con_red('planificador', lambda: _pieza_modelo(
         'planificador', cfg['planificador'][0], cfg['planificador'][1], probes))
     sal['ensamblador'] = _con_red('ensamblador', lambda: _pieza_modelo(

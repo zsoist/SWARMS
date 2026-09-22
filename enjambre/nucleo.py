@@ -21,6 +21,7 @@ Uso:
 """
 
 import asyncio
+import datetime as _dt
 import json
 import os
 import re
@@ -32,9 +33,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
-# Las corridas se guardan en ./runs del directorio desde donde invocas
-# el comando, no dentro del paquete instalado.
-ROOT = Path(os.environ.get("ENJAMBRE_DIR", Path.cwd()))
+ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
 
 MAX_AGENTS = int(os.environ.get("MAX_DEEPSEEK_AGENTS", "8"))
@@ -485,8 +484,15 @@ class Swarm:
         if not url:
             return
         try:
+            # La hora del EVENTO, no la de la inserción. Sin esto Supabase
+            # pone now() al llegar el lote y los ~20 eventos de un mismo flush
+            # aterrizan en el mismo instante: la línea de tiempo se aplana.
+            t = obj.get("t")
+            ts = (_dt.datetime.fromtimestamp(t, tz=_dt.timezone.utc).isoformat()
+                  if isinstance(t, (int, float)) else None)
             self._pending_events.append({
                 "run_id": self.run_dir.name,
+                "ts": ts,
                 "event": obj.get("event", "?"),
                 "task_id": obj.get("id"),
                 "payload": obj,
@@ -711,8 +717,7 @@ class Swarm:
             await asyncio.gather(*self._beams, return_exceptions=True)
 
 
-def cli():
-    """Punto de entrada del comando `enjambre`."""
+if __name__ == "__main__":
     if len(sys.argv) < 2:
         sys.exit('Uso: swarm.py "reto" | --demo | --resume runs/<dir> | --plan plan.json')
     if sys.argv[1] == "--plan":
@@ -731,13 +736,11 @@ def cli():
         asyncio.run(Swarm("(resume)", resume_dir=rd).run())
         sys.exit(0)
     task = (
-        "Escribe un README corto para un proyecto que orquesta agentes "
-        "baratos en paralelo: qué hace, cómo se instala y un ejemplo."
+        "Crea el kit de demo del Build Day: (1) un one-pager en markdown que "
+        "explique la arquitectura Fable-orquesta-8-DeepSeek, (2) un guion de "
+        "demo de 2 minutos, (3) tres preguntas difíciles que el público podría "
+        "hacer, con respuestas."
         if sys.argv[1] == "--demo"
         else " ".join(sys.argv[1:])
     )
     asyncio.run(Swarm(task).run())
-
-
-if __name__ == "__main__":
-    cli()
