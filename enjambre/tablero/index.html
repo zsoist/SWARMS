@@ -1,0 +1,726 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Tablero de enjambre</title>
+<style>
+  /* ===== Base: instrumento oscuro, monoespaciado, sin adornos ===== */
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  [hidden]{display:none !important}
+  body{
+    background:#0d0f10;color:#d4dade;
+    font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    font-size:13px;line-height:1.5;
+    -webkit-font-smoothing:antialiased;
+  }
+  header{border-bottom:1px solid #242a2f}
+  .cab{max-width:1240px;margin:0 auto;padding:20px 18px 14px}
+  h1{margin:0;font-size:12px;font-weight:600;letter-spacing:.22em;text-transform:uppercase;color:#9aa5ad}
+  .enunciado{margin-top:7px;font-size:11.5px;color:#6b757d;max-width:96ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  main{max-width:1240px;margin:0 auto;padding:0 18px 80px}
+
+  /* ===== Barra de controles ===== */
+  .barra{display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:16px 0;border-bottom:1px solid #1c2126}
+  .drop{position:relative;display:inline-flex;align-items:center;padding:9px 15px;border:1px dashed #333c44;
+        background:#12161a;color:#8a949c;font-size:12px;letter-spacing:.04em;cursor:pointer;user-select:none}
+  .drop:hover,.drop.activo{border-color:#5c6a77;background:#161b20;color:#d4dade}
+  .drop input{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
+  button{font:inherit;font-size:12px;letter-spacing:.04em;padding:9px 15px;background:#12161a;color:#c2cad1;
+         border:1px solid #333c44;cursor:pointer}
+  button:hover{background:#161b20;border-color:#5c6a77;color:#eef2f5}
+  .estado{margin-left:auto;font-size:11px;color:#5f686f}
+
+  /* ===== Avisos ===== */
+  .aviso{margin:14px 0 0;padding:10px 12px;border:1px solid #242a2f;background:#12161a;font-size:12px;color:#a8b1b8}
+  .aviso.error{border-color:#5a2a27;background:#1a1212;color:#e6a8a3}
+
+  /* ===== Tarjetas ===== */
+  .tarjetas{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:1px;background:#1c2126;border:1px solid #1c2126}
+  .tarjeta{background:#12161a;padding:14px 15px}
+  .tarjeta .rot{font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;color:#6b757d}
+  .tarjeta .val{font-size:23px;color:#eef2f5;margin-top:9px;font-variant-numeric:tabular-nums;line-height:1.1}
+  .tarjeta .sub{font-size:11px;color:#5f686f;margin-top:7pxclear:both;display:block;margin-top:6px}
+
+  /* ===== Secciones ===== */
+  section{margin-top:32px}
+  h2{display:flex;align-items:baseline;gap:9px;font-size:11px;font-weight:600;letter-spacing:.2em;
+     text-transform:uppercase;color:#8a949c;margin:0 0 12px}
+  h2 .n{border:1px solid #262d33;color:#4d565d;padding:1px 6px;letter-spacing:0}
+  .nota{font-size:11.5px;color:#5f686f;margin:-4px 0 12px}
+
+  /* ===== Leyenda ===== */
+  .leyenda{display:flex;flex-wrap:wrap;gap:16px;margin:0 0 11px;font-size:11px;color:#79838b}
+  .leyenda-item{display:inline-flex;align-items:center}
+  .leyenda b{color:#c2cad1;font-weight:600}
+  .punto{display:inline-block;width:9px;height:9px;margin-right:7px;vertical-align:middle;flex:0 0 auto}
+
+  /* ===== DAG ===== */
+  .dag-marco{border:1px solid #1c2126;background:#0b0d0e;overflow-x:auto;overflow-y:hidden}
+  svg.dag{display:block}
+  .nodo-id{font-size:13px;font-weight:600;fill:#e6ebef}
+  .nodo-arch{font-size:10.5px;fill:#79838b}
+  .nodo-meta{font-size:10px;fill:#5a636a}
+  .arista{fill:none;stroke:#39424a;stroke-width:1.2}
+
+  /* ===== Linea de tiempo ===== */
+  .linea{border:1px solid #1c2126;background:#12161a}
+  .linea-cab{display:grid;grid-template-columns:76px minmax(0,1fr) 74px;gap:10px;align-items:end;padding:9px 12px 0}
+  .cab-pista{position:relative;height:16px;border-left:1px solid transparent;border-right:1px solid transparent}
+  .tick{position:absolute;bottom:0;font-size:9.5px;color:#575f66;white-space:nowrap}
+  .linea-cuerpo{position:relative;padding:3px 0 8px}
+  .rejilla{position:absolute;top:0;bottom:0;left:0;right:0;display:grid;
+           grid-template-columns:76px minmax(0,1fr) 74px;gap:10px;padding:0 12px;pointer-events:none}
+  .rejilla-pista{position:relative;border-left:1px solid transparent;border-right:1px solid transparent}
+  .gl{position:absolute;top:0;bottom:0;width:1px;background:#191f24}
+  .linea-fila{display:grid;grid-template-columns:76px minmax(0,1fr) 74px;gap:10px;align-items:center;
+              padding:3px 12px;position:relative;z-index:1}
+  .pista{position:relative;height:14px;background:#0e1215;border-left:1px solid #1c2126;border-right:1px solid #1c2126}
+  .barra{position:absolute;top:2px;height:10px;min-width:2px;display:block}
+  .sin-entrega{position:absolute;top:4px;width:6px;height:6px;margin-left:-3px;border:1px solid #6b757d;background:transparent;display:block}
+  .etq{font-size:11.5px;color:#9aa5ad;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .dur{font-size:11px;color:#6b757d;text-align:right;font-variant-numeric:tabular-nums;
+       overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+  /* ===== Tabla ===== */
+  .tabla-marco{border:1px solid #1c2126;overflow-x:auto;background:#12161a}
+  table{width:100%;border-collapse:collapse;min-width:620px}
+  th{text-align:left;font-size:10.5px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;
+     color:#79838b;padding:11px 13px;border-bottom:1px solid #242a2f;white-space:nowrap}
+  td{padding:9px 13px;border-bottom:1px solid #171c20;font-size:12px;vertical-align:middle}
+  tr:last-child td{border-bottom:0}
+  tbody tr:hover{background:#161b20}
+  th.num,td.num{text-align:right;font-variant-numeric:tabular-nums}
+  .tenue{color:#5f686f}
+  .arch{color:#96a0a8}
+  .cid{color:#d4dade}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="cab">
+    <h1>Tablero de enjambre</h1>
+    <div class="enunciado" id="enunciado">sin corrida cargada</div>
+  </div>
+</header>
+
+<main>
+  <div class="barra">
+    <label class="drop" id="zona">
+      <input type="file" id="archivo" accept=".jsonl,.json,.txt,application/json">
+      <span>soltar swarm.jsonl</span>
+    </label>
+    <button id="ejemplo" type="button">ver ejemplo</button>
+    <span class="estado" id="estado">sin datos</span>
+  </div>
+
+  <div class="aviso" id="aviso" hidden></div>
+
+  <section id="secTarjetas" hidden>
+    <div class="tarjetas" id="tarjetas"></div>
+  </section>
+
+  <section id="secDag" hidden>
+    <h2><span class="n">1</span> DAG de dependencias</h2>
+    <div class="leyenda" id="leyenda"></div>
+    <div class="dag-marco" id="dagMarco"></div>
+  </section>
+
+  <section id="secLinea" hidden>
+    <h2><span class="n">2</span> Linea de tiempo</h2>
+    <p class="nota">Cada barra arranca en el instante de entrega menos su duracion; los solapes son trabajo en paralelo.</p>
+    <div id="linea"></div>
+  </section>
+
+  <section id="secTabla" hidden>
+    <h2><span class="n">3</span> Detalle por tarea</h2>
+    <div class="tabla-marco" id="tabla"></div>
+  </section>
+</main>
+
+<script>
+(function(){
+"use strict";
+
+/* =========================================================================
+   PALETA DE ESTADOS
+   ========================================================================= */
+var ESTADOS = {
+  ok:        { color:"#3fb950", etiqueta:"entregada"  },
+  rechazo:   { color:"#f85149", etiqueta:"rechazada"  },
+  sinJuez:   { color:"#58a6ff", etiqueta:"sin juez"   },
+  pendiente: { color:"#6b757d", etiqueta:"pendiente"  }
+};
+var ORDEN_ESTADOS = ["ok","rechazo","sinJuez","pendiente"];
+
+/* =========================================================================
+   DATOS DE EJEMPLO incrustados (para el boton "ver ejemplo")
+   Mismo formato real de runs/<timestamp>-swarm/swarm.jsonl
+   ========================================================================= */
+var EJEMPLO = [
+'{"t":1790.1,"event":"start","task":"Construir un tablero visual del enjambre en un solo archivo HTML"}',
+'{"t":1790.6,"event":"plan","task":"Construir un tablero visual del enjambre en un solo archivo HTML","tasks":[{"id":"t1","prompt":"Esqueleto HTML, paleta y tipografia","deps":[],"thinking":"none","filename":"t1-esqueleto.md"},{"id":"t2","prompt":"Parser tolerante de swarm.jsonl","deps":[],"thinking":"high","filename":"t2-parser.md"},{"id":"t3","prompt":"Layout del DAG y aristas en SVG","deps":["t2"],"thinking":"high","filename":"t3-dag.md"},{"id":"t4","prompt":"Linea de tiempo del paralelismo","deps":["t2"],"thinking":"none","filename":"t4-linea.md"},{"id":"t5","prompt":"Tarjetas y tabla de resultados","deps":["t1"],"thinking":"none","filename":"t5-tabla.md"},{"id":"t6","prompt":"Ensamblaje y verificacion final","deps":["t3","t4","t5"],"thinking":"high","filename":"t6-ensamblaje.md"},{"id":"t7","prompt":"Datos de ejemplo y avisos de error","deps":[],"thinking":"none","filename":"t7-ejemplo.md"}]}',
+'{"t":1797.9,"event":"ship","id":"t1","filename":"t1-esqueleto.md","secs":7.3}',
+'{"t":1802.0,"event":"ship","id":"t7","filename":"t7-ejemplo.md","secs":11.4}',
+'{"t":1804.2,"event":"ship","id":"t2","filename":"t2-parser.md","secs":13.6}',
+'{"t":1815.5,"event":"ship","id":"t5","filename":"t5-tabla.md","secs":17.2}',
+'{"t":1821.8,"event":"ship","id":"t4","filename":"t4-linea.md","secs":15.7}',
+'{"t":1829.3,"event":"ship","id":"t3","filename":"t3-dag.md","secs":24.4}',
+'{"t":1838.0,"event":"ship","id":"t6","filename":"t6-ensamblaje.md","secs":16.9}',
+'{"t":1797.9,"event":"jev","id":"t1","p":0.91,"quality":3,"action":"aprobar"}',
+'{"t":1804.3,"event":"jev","id":"t2","p":0.88,"quality":3,"action":"aprobar"}',
+'{"t":1829.4,"event":"jev","id":"t3","p":0.42,"quality":1,"action":"rechazar"}',
+'{"t":1821.9,"event":"jev","id":"t4","p":0.79,"quality":2,"action":"aprobar"}',
+'{"t":1815.6,"event":"jev","id":"t5","p":0.84,"quality":3,"action":"aprobar"}',
+'{"t":1838.1,"event":"jev","id":"t6","p":0.95,"quality":3,"action":"aprobar"}',
+'{"t":1841.2,"event":"done","secs":51.1,"cost":{"deepseek":0.0,"openrouter":0.0134}}'
+].join("\n");
+
+/* =========================================================================
+   UTILIDADES
+   ========================================================================= */
+function esc(s){
+  return String(s==null?"":s)
+    .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+    .replace(/"/g,"&quot;").replace(/'/g,"&#39;");
+}
+function recortar(s,n){
+  s = String(s==null?"":s);
+  return s.length>n ? s.slice(0,n-1)+"\u2026" : s;
+}
+function num(v,d){
+  if(typeof v!=="number" || !isFinite(v)) return "\u2014";
+  return v.toFixed(d);
+}
+function fmtSeg(s){
+  if(!(s>0)) return "0s";
+  if(s>=60) return Math.floor(s/60)+"m"+Math.round(s%60)+"s";
+  return (s>=10 ? String(Math.round(s)) : s.toFixed(1))+"s";
+}
+function esAprobado(t){
+  if(typeof t.action==="string"){
+    var a = t.action.toLowerCase();
+    if(/rechaz|reject|fail|descart|error|block/.test(a)) return false;
+    if(/aprob|accept|pass|ok|valida|ship/.test(a)) return true;
+  }
+  if(typeof t.p==="number") return t.p>=0.5;
+  if(typeof t.quality==="number") return t.quality>=2;
+  return false;
+}
+function estadoDe(t){
+  if(t.juez) return esAprobado(t) ? "ok" : "rechazo";
+  if(t.shipT===null && t.secs===null) return "pendiente";
+  return "sinJuez";
+}
+
+/* =========================================================================
+   PARSEO TOLERANTE: una linea JSON por evento; las rotas se cuentan y se saltan
+   ========================================================================= */
+function parsear(texto){
+  var lineas = String(texto).split(/\r?\n/);
+  var eventos = [], rotas = 0, total = 0;
+  for(var i=0;i<lineas.length;i++){
+    var s = lineas[i].trim();
+    if(!s) continue;
+    total++;
+    try{
+      var o = JSON.parse(s);
+      if(o && typeof o==="object" && !Array.isArray(o) && typeof o.event==="string") eventos.push(o);
+      else rotas++;
+    }catch(e){
+      rotas++; /* linea rota: se ignora sin reventar */
+    }
+  }
+  return { eventos:eventos, rotas:rotas, total:total };
+}
+
+/* =========================================================================
+   MODELO: se agregan los eventos en una tabla de tareas por id
+   ========================================================================= */
+function construirModelo(eventos){
+  var tarea = "";
+  var mapa = new Map();
+  var orden = [];
+  var t0 = null, t1 = null;
+  var doneEv = null;
+
+  function tocaTiempo(t){
+    if(t===null) return;
+    if(t0===null || t<t0) t0 = t;
+    if(t1===null || t>t1) t1 = t;
+  }
+  function asegurar(id){
+    if(!mapa.has(id)){
+      mapa.set(id, {
+        id:id, prompt:"", deps:[], filename:"",
+        planT:null, shipT:null, secs:null,
+        juez:false, p:null, quality:null, action:null
+      });
+      orden.push(id);
+    }
+    return mapa.get(id);
+  }
+
+  eventos.forEach(function(ev){
+    var t = (typeof ev.t==="number" && isFinite(ev.t)) ? ev.t : null;
+    tocaTiempo(t);
+    var id = (typeof ev.id==="string") ? ev.id : null;
+
+    if(ev.event==="start"){
+      if(typeof ev.task==="string") tarea = ev.task;
+      return;
+    }
+    if(ev.event==="plan"){
+      if(typeof ev.task==="string") tarea = ev.task;
+      if(Array.isArray(ev.tasks)){
+        ev.tasks.forEach(function(pt){
+          if(!pt || typeof pt.id!=="string") return;
+          var x = asegurar(pt.id);
+          if(typeof pt.prompt==="string" && pt.prompt) x.prompt = pt.prompt;
+          if(typeof pt.filename==="string" && pt.filename && !x.filename) x.filename = pt.filename;
+          if(Array.isArray(pt.deps)){
+            x.deps = pt.deps.filter(function(d){ return typeof d==="string"; });
+          }
+          if(x.planT===null && t!==null) x.planT = t;
+        });
+      }
+      return;
+    }
+    if(ev.event==="ship"){
+      if(!id) return;
+      var s = asegurar(id);
+      if(t!==null) s.shipT = t;
+      if(typeof ev.secs==="number" && isFinite(ev.secs)) s.secs = ev.secs;
+      if(typeof ev.filename==="string" && ev.filename) s.filename = ev.filename;
+      return;
+    }
+    if(ev.event==="jev"){
+      if(!id) return;
+      var j = asegurar(id);
+      j.juez = true;
+      if(typeof ev.p==="number" && isFinite(ev.p)) j.p = ev.p;
+      if(typeof ev.quality==="number" && isFinite(ev.quality)) j.quality = ev.quality;
+      if(typeof ev.action==="string") j.action = ev.action;
+      return;
+    }
+    if(ev.event==="done"){
+      doneEv = ev;
+      return;
+    }
+  });
+
+  var tareas = orden.map(function(id){ return mapa.get(id); });
+
+  /* Duracion de reserva si el ship no traia secs */
+  tareas.forEach(function(x){
+    if(x.secs===null && x.shipT!==null){
+      var base = (x.planT!==null) ? x.planT : t0;
+      if(base!==null && x.shipT>base) x.secs = x.shipT - base;
+    }
+    if(x.secs!==null && x.secs<0) x.secs = 0;
+  });
+
+  /* Segundos de la corrida: del evento done o del rango temporal observado */
+  var segundos = null;
+  if(doneEv && typeof doneEv.secs==="number" && isFinite(doneEv.secs)) segundos = doneEv.secs;
+  else if(t0!==null && t1!==null) segundos = t1 - t0;
+
+  /* Costo total sumando el desglose del evento done */
+  var costo = null, costoDetalle = "sin evento done";
+  if(doneEv){
+    if(doneEv.cost && typeof doneEv.cost==="object" && !Array.isArray(doneEv.cost)){
+      var totalCosto = 0, partes = [];
+      Object.keys(doneEv.cost).forEach(function(k){
+        var v = doneEv.cost[k];
+        if(typeof v==="number" && isFinite(v)){
+          totalCosto += v;
+          partes.push(k+" "+v.toFixed(4));
+        }
+      });
+      costo = totalCosto;
+      costoDetalle = partes.length ? partes.join(" \u00b7 ") : "desglose vacio";
+    }else{
+      costo = 0;
+      costoDetalle = "sin desglose de coste";
+    }
+  }
+
+  return {
+    tarea:tarea,
+    tareas:tareas,
+    t0:t0,
+    t1:t1,
+    segundosCorrida:segundos,
+    costoTotal:costo,
+    costoDetalle:costoDetalle
+  };
+}
+
+/* =========================================================================
+   NIVELES DE DEPENDENCIA para el layout del DAG
+   ========================================================================= */
+function calcularNiveles(tareas){
+  var porId = new Map();
+  tareas.forEach(function(t){ porId.set(t.id, t); });
+  var nivel = new Map();
+  var pila = new Set();
+
+  function calc(id){
+    if(nivel.has(id)) return nivel.get(id);
+    if(pila.has(id)) return 0; /* dependencia ciclica: se corta el bucle */
+    pila.add(id);
+    var t = porId.get(id);
+    var n = 0;
+    if(t && t.deps && t.deps.length){
+      t.deps.forEach(function(d){
+        if(porId.has(d)) n = Math.max(n, calc(d)+1);
+      });
+    }
+    pila.delete(id);
+    nivel.set(id, n);
+    return n;
+  }
+  tareas.forEach(function(t){ calc(t.id); });
+  return nivel;
+}
+
+/* =========================================================================
+   RENDER 1: TARJETAS
+   ========================================================================= */
+function tarjeta(rot,val,sub){
+  return '<div class="tarjeta"><div class="rot">'+esc(rot)+'</div>'
+       + '<div class="val">'+esc(val)+'</div>'
+       + '<div class="sub">'+esc(sub)+'</div></div>';
+}
+function renderTarjetas(m){
+  var juzgadas = 0, aprobadas = 0;
+  m.tareas.forEach(function(t){
+    if(t.juez){ juzgadas++; if(esAprobado(t)) aprobadas++; }
+  });
+  var segs = m.segundosCorrida;
+  var h = [];
+  h.push(tarjeta("Tareas", String(m.tareas.length), juzgadas+" con veredicto del juez"));
+  h.push(tarjeta("Corrida", segs!==null ? num(segs,1)+" s" : "\u2014", "del start al done"));
+  h.push(tarjeta("Costo", m.costoTotal!==null ? "$"+m.costoTotal.toFixed(4) : "\u2014", m.costoDetalle));
+  h.push(tarjeta("Pasaron el juez", aprobadas+" / "+juzgadas,
+        juzgadas ? Math.round(aprobadas/juzgadas*100)+"% de aprobacion" : "sin eventos jev"));
+  document.getElementById("tarjetas").innerHTML = h.join("");
+}
+
+/* =========================================================================
+   RENDER 2: LEYENDA DE ESTADOS
+   ========================================================================= */
+function renderLeyenda(m){
+  var c = { ok:0, rechazo:0, sinJuez:0, pendiente:0 };
+  m.tareas.forEach(function(t){ c[estadoDe(t)]++; });
+  document.getElementById("leyenda").innerHTML = ORDEN_ESTADOS.map(function(k){
+    return '<span class="leyenda-item"><span class="punto" style="background:'+ESTADOS[k].color+'"></span>'
+         + esc(ESTADOS[k].etiqueta)+' <b>'+c[k]+'</b></span>';
+  }).join("");
+}
+
+/* =========================================================================
+   RENDER 3: DAG en SVG puro, posiciones por nivel de dependencia
+   ========================================================================= */
+function renderDag(m){
+  var tareas = m.tareas;
+  var niveles = calcularNiveles(tareas);
+
+  var columnas = [], maxNivel = 0;
+  tareas.forEach(function(t){
+    var n = niveles.get(t.id) || 0;
+    if(n>maxNivel) maxNivel = n;
+    if(!columnas[n]) columnas[n] = [];
+    columnas[n].push(t);
+  });
+  for(var i=0;i<=maxNivel;i++){ if(!columnas[i]) columnas[i] = []; }
+
+  var NW=172, NH=60, GX=80, GY=26, PX=20, PY=20;
+  var maxFilas = 1;
+  columnas.forEach(function(c){ if(c.length>maxFilas) maxFilas = c.length; });
+  var ancho = PX*2 + columnas.length*NW + Math.max(0,columnas.length-1)*GX;
+  var alto  = PY*2 + maxFilas*NH + Math.max(0,maxFilas-1)*GY;
+
+  var pos = new Map();
+  columnas.forEach(function(col, ci){
+    col.forEach(function(t, ri){
+      pos.set(t.id, { x: PX + ci*(NW+GX), y: PY + ri*(NH+GY) });
+    });
+  });
+
+  var s = [];
+  s.push('<svg class="dag" width="'+ancho+'" height="'+alto+'" viewBox="0 0 '+ancho+' '+alto+'" xmlns="http://www.w3.org/2000/svg">');
+  s.push('<defs><marker id="punta" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">'
+       + '<path d="M0,0 L8,4 L0,8 z" fill="#39424a"></path></marker></defs>');
+
+  /* Aristas: de la dependencia al dependiente, curvas bezier */
+  tareas.forEach(function(t){
+    var p = pos.get(t.id);
+    if(!p) return;
+    (t.deps || []).forEach(function(d){
+      var q = pos.get(d);
+      if(!q) return;
+      var x1 = q.x + NW, y1 = q.y + NH/2;
+      var x2 = p.x,      y2 = p.y + NH/2;
+      var dx = Math.max(28, Math.abs(x2-x1)*0.45);
+      var dPath = 'M'+x1+','+y1+' C'+(x1+dx)+','+y1+' '+(x2-dx)+','+y2+' '+x2+','+y2;
+      s.push('<path class="arista" d="'+dPath+'" marker-end="url(#punta)"></path>');
+    });
+  });
+
+  /* Nodos */
+  tareas.forEach(function(t){
+    var p = pos.get(t.id);
+    if(!p) return;
+    var est = estadoDe(t);
+    var color = ESTADOS[est].color;
+
+    var meta = [];
+    if(t.secs!==null) meta.push(fmtSeg(t.secs));
+    if(t.juez){
+      meta.push("juez " + (typeof t.p==="number" ? t.p.toFixed(2) : "\u2014"));
+      if(typeof t.quality==="number") meta.push("q"+t.quality);
+    }else if(t.shipT!==null){
+      meta.push("sin juez");
+    }
+    if(t.deps && t.deps.length) meta.push("dep " + t.deps.join(","));
+
+    var archivo = t.filename || t.prompt || "\u2014";
+    var tip = t.id + " \u00b7 " + ESTADOS[est].etiqueta
+            + (t.secs!==null ? " \u00b7 " + fmtSeg(t.secs) : " \u00b7 sin entrega")
+            + (t.juez ? " \u00b7 juez " + (typeof t.p==="number" ? t.p.toFixed(2) : "?")
+                        + (t.action ? " (" + t.action + ")" : "") : " \u00b7 sin juez");
+
+    s.push('<g class="nodo" transform="translate('+p.x+','+p.y+')">');
+    s.push('<rect x="0.5" y="0.5" width="'+(NW-1)+'" height="'+(NH-1)+'" fill="#141a1f" stroke="'+color+'" stroke-opacity="0.55"></rect>');
+    s.push('<rect x="0.5" y="0.5" width="3" height="'+(NH-1)+'" fill="'+color+'"></rect>');
+    s.push('<circle cx="'+(NW-14)+'" cy="19" r="3.5" fill="'+color+'"></circle>');
+    s.push('<text class="nodo-id" x="15" y="23">'+esc(recortar(t.id,16))+'</text>');
+    s.push('<text class="nodo-arch" x="15" y="39">'+esc(recortar(archivo,24))+'</text>');
+    s.push('<text class="nodo-meta" x="15" y="53">'+esc(recortar(meta.join(" \u00b7 "),27))+'</text>');
+    s.push('<title>'+esc(tip)+'</title>');
+    s.push('</g>');
+  });
+
+  s.push('</svg>');
+  document.getElementById("dagMarco").innerHTML = s.join("");
+}
+
+/* =========================================================================
+   RENDER 4: LINEA DE TIEMPO (una barra por tarea, se ve el paralelismo)
+   ========================================================================= */
+function renderLinea(m){
+  var t0 = (m.t0!==null) ? m.t0 : 0;
+
+  var filas = m.tareas.map(function(t){
+    var fin = (t.shipT!==null) ? (t.shipT - t0) : null;
+    var ini;
+    if(fin!==null && t.secs!==null) ini = fin - t.secs;
+    else if(t.planT!==null) ini = t.planT - t0;
+    else ini = 0;
+    if(ini<0) ini = 0;
+    if(fin===null) fin = ini;
+    if(fin<ini) fin = ini;
+    return { t:t, ini:ini, fin:fin };
+  });
+
+  var total = 0;
+  filas.forEach(function(f){ if(f.fin>total) total = f.fin; });
+  if(m.segundosCorrida!==null && m.segundosCorrida>total) total = m.segundosCorrida;
+  if(!(total>0)) total = 1;
+
+  /* Orden por instante de arranque: asi se lee el paralelismo de un vistazo */
+  filas.sort(function(a,b){ return (a.ini-b.ini) || (a.t.id<b.t.id ? -1 : 1); });
+
+  var h = [];
+  h.push('<div class="linea">');
+
+  /* Eje temporal */
+  h.push('<div class="linea-cab"><div class="etq"></div><div class="cab-pista">');
+  [0,25,50,75,100].forEach(function(pc){
+    var st = 'left:'+pc+'%';
+    if(pc===100) st += ';transform:translateX(-100%)';
+    else if(pc>0) st += ';transform:translateX(-50%)';
+    h.push('<span class="tick" style="'+st+'">'+esc(fmtSeg(total*pc/100))+'</span>');
+  });
+  h.push('</div><div class="etq"></div></div>');
+
+  /* Cuerpo con rejilla vertical de fondo */
+  h.push('<div class="linea-cuerpo">');
+  h.push('<div class="rejilla"><div></div><div class="rejilla-pista">');
+  [25,50,75].forEach(function(pc){
+    h.push('<span class="gl" style="left:'+pc+'%"></span>');
+  });
+  h.push('</div><div></div></div>');
+
+  filas.forEach(function(f){
+    var est = estadoDe(f.t);
+    var color = ESTADOS[est].color;
+    var izq = (f.ini/total)*100;
+    if(izq>99.5) izq = 99.5;
+    var anc = ((f.fin-f.ini)/total)*100;
+    if(anc<0.7) anc = 0.7;
+    if(izq+anc>100) anc = 100-izq;
+
+    var tip = f.t.id + " \u00b7 " + ESTADOS[est].etiqueta + " \u00b7 " + fmtSeg(f.fin-f.ini)
+            + (f.t.shipT===null ? " (sin entrega)" : "");
+
+    h.push('<div class="linea-fila">');
+    h.push('<div class="etq">'+esc(f.t.id)+'</div>');
+    h.push('<div class="pista">');
+    if(f.t.shipT===null && f.t.secs===null){
+      h.push('<span class="sin-entrega" style="left:'+izq+'%"></span>');
+    }else{
+      h.push('<span class="barra" style="left:'+izq+'%;width:'+anc+'%;background:'+color+'" title="'+esc(tip)+'"></span>');
+    }
+    h.push('</div>');
+    h.push('<div class="dur">'+(f.t.secs!==null ? fmtSeg(f.t.secs) : '\u2014')+'</div>');
+    h.push('</div>');
+  });
+
+  h.push('</div></div>');
+  document.getElementById("linea").innerHTML = h.join("");
+}
+
+/* =========================================================================
+   RENDER 5: TABLA DE DETALLE
+   ========================================================================= */
+function celdaJuez(t){
+  if(!t.juez) return '<span class="tenue">sin juez</span>';
+  var partes = [];
+  if(typeof t.p==="number") partes.push('<b>'+t.p.toFixed(2)+'</b>');
+  if(typeof t.quality==="number") partes.push('<span class="tenue">q'+t.quality+'</span>');
+  return partes.length ? partes.join(' <span class="tenue">\u00b7</span> ') : '<span class="tenue">jev</span>';
+}
+function renderTabla(m){
+  var filas = m.tareas.slice().sort(function(a,b){
+    return a.id.localeCompare(b.id, undefined, { numeric:true, sensitivity:"base" });
+  });
+  var h = [];
+  h.push('<table><thead><tr>');
+  h.push('<th>id</th><th>archivo</th><th class="num">segundos</th><th class="num">juez</th><th>accion</th>');
+  h.push('</tr></thead><tbody>');
+
+  filas.forEach(function(t){
+    var est = estadoDe(t);
+    var color = ESTADOS[est].color;
+    var accion = t.action ? t.action : (t.juez ? ESTADOS[est].etiqueta : "\u2014");
+    h.push('<tr>');
+    h.push('<td><span class="punto" style="background:'+color+'"></span><span class="cid">'+esc(t.id)+'</span></td>');
+    h.push('<td class="arch">'+esc(t.filename || "\u2014")+'</td>');
+    h.push('<td class="num">'+(t.secs!==null ? num(t.secs,1) : "\u2014")+'</td>');
+    h.push('<td class="num">'+celdaJuez(t)+'</td>');
+    h.push('<td style="color:'+(t.juez ? color : "#5f686f")+'">'+esc(accion)+'</td>');
+    h.push('</tr>');
+  });
+
+  h.push('</tbody></table>');
+  document.getElementById("tabla").innerHTML = h.join("");
+}
+
+/* =========================================================================
+   AVISOS
+   ========================================================================= */
+var elAviso = document.getElementById("aviso");
+function ponerAviso(msg, esError){
+  if(!msg){ elAviso.hidden = true; elAviso.textContent = ""; return; }
+  elAviso.hidden = false;
+  elAviso.className = esError ? "aviso error" : "aviso";
+  elAviso.textContent = msg;
+}
+
+/* =========================================================================
+   CARGA PRINCIPAL
+   ========================================================================= */
+var SECCIONES = ["secTarjetas","secDag","secLinea","secTabla"];
+function cargar(texto, origen){
+  var res = parsear(texto);
+  var m = construirModelo(res.eventos);
+
+  document.getElementById("estado").textContent =
+      origen + " \u00b7 " + res.eventos.length + " eventos \u00b7 " + m.tareas.length + " tareas"
+      + (res.rotas ? " \u00b7 " + res.rotas + " lineas rotas" : "");
+
+  /* Sin eventos utiles: se dice claramente en vez de dejar la pagina en blanco */
+  if(m.tareas.length===0){
+    SECCIONES.forEach(function(id){ document.getElementById(id).hidden = true; });
+    document.getElementById("enunciado").textContent = "sin corrida cargada";
+    ponerAviso("El origen '" + origen + "' no trae eventos utiles: se leyeron " + res.total
+      + " lineas (" + res.rotas + " ilegibles) pero ninguna es un evento plan, ship o jev con datos."
+      + " Comprueba que sea el swarm.jsonl de una corrida.", true);
+    return;
+  }
+
+  document.getElementById("enunciado").textContent = m.tarea || "(el evento start no traia enunciado)";
+  SECCIONES.forEach(function(id){ document.getElementById(id).hidden = false; });
+
+  renderTarjetas(m);
+  renderLeyenda(m);
+  renderDag(m);
+  renderLinea(m);
+  renderTabla(m);
+
+  var avisos = [];
+  if(res.rotas>0) avisos.push(res.rotas + " linea(s) ilegible(s) ignorada(s) sin interrumpir la carga.");
+  var pendientes = m.tareas.filter(function(t){ return estadoDe(t)==="pendiente"; }).length;
+  if(pendientes>0) avisos.push(pendientes + " tarea(s) del plan sin evento ship.");
+  ponerAviso(avisos.join(" "), false);
+}
+
+/* =========================================================================
+   ENTRADA DE ARCHIVO (input + arrastrar y soltar)
+   ========================================================================= */
+function leerArchivo(f){
+  var lector = new FileReader();
+  lector.onload = function(){ cargar(String(lector.result), f.name); };
+  lector.onerror = function(){ ponerAviso("No se pudo leer el archivo " + f.name + ".", true); };
+  lector.readAsText(f);
+}
+
+var zona = document.getElementById("zona");
+var entrada = document.getElementById("archivo");
+
+entrada.addEventListener("change", function(){
+  var f = entrada.files && entrada.files[0];
+  if(f) leerArchivo(f);
+});
+
+["dragenter","dragover"].forEach(function(ev){
+  zona.addEventListener(ev, function(e){
+    e.preventDefault(); e.stopPropagation();
+    zona.classList.add("activo");
+  });
+});
+["dragleave","dragend"].forEach(function(ev){
+  zona.addEventListener(ev, function(e){
+    e.preventDefault(); e.stopPropagation();
+    zona.classList.remove("activo");
+  });
+});
+zona.addEventListener("drop", function(e){
+  e.preventDefault(); e.stopPropagation();
+  zona.classList.remove("activo");
+  var dt = e.dataTransfer;
+  if(dt && dt.files && dt.files[0]) leerArchivo(dt.files[0]);
+});
+
+/* Evita que el navegador abra el archivo si se suelta fuera de la zona */
+window.addEventListener("dragover", function(e){ e.preventDefault(); });
+window.addEventListener("drop", function(e){ e.preventDefault(); });
+
+document.getElementById("ejemplo").addEventListener("click", function(){
+  cargar(EJEMPLO, "datos de ejemplo");
+});
+
+/* =========================================================================
+   ESTADO INICIAL
+   ========================================================================= */
+ponerAviso("Suelta un swarm.jsonl sobre la zona de la izquierda o pulsa 'ver ejemplo' para ver el tablero con una corrida de muestra.", false);
+
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,31 @@
+{
+  "name": "enjambre",
+  "displayName": "Enjambre",
+  "version": "0.1.0",
+  "description": "Un modelo bueno piensa y reparte; veinte baratos ejecutan en paralelo; un juez de centavos revisa. Tu propio ejército de agentes en cualquier terminal.",
+  "author": { "name": "Daniel Reyes" },
+  "license": "MIT",
+  "keywords": ["agents", "swarm", "orchestration", "openrouter", "deepseek", "glm"],
+  "userConfig": {
+    "OPENROUTER_API_KEY": {
+      "type": "string",
+      "title": "OpenRouter API key",
+      "description": "Una sola llave da acceso a cientos de modelos. https://openrouter.ai/keys",
+      "sensitive": true,
+      "required": false
+    },
+    "DEEPSEEK_API_KEY": {
+      "type": "string",
+      "title": "DeepSeek API key",
+      "description": "Más barato y con mucha más concurrencia. https://platform.deepseek.com",
+      "sensitive": true,
+      "required": false
+    },
+    "WORKER_MODEL": {
+      "type": "string",
+      "title": "Modelo de la tropa",
+      "description": "Cambia toda la tropa de una. Ej: z-ai/glm-5.3-flash",
+      "required": false
+    }
+  }
+}

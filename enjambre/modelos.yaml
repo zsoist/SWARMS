@@ -1,0 +1,56 @@
+# Mapa de ROLES a modelos. Cambia esto, no el código.
+#
+# La idea: un modelo caro piensa y descompone; muchos baratos ejecutan en
+# paralelo; un juez de centavos aprueba cada salida. Tú decides quién es quién.
+#
+# Los secretos NUNCA van aquí: van en .env. Aquí solo van nombres de modelo.
+
+roles:
+  # Planifica y descompone la tarea en un DAG. Es la llamada más cara y la
+  # más importante: si el plan es malo, no hay tropa que lo salve.
+  planificador:
+    modelo: deepseek-v4-pro
+    proveedor: deepseek
+
+  # Ensambla los resultados en el entregable final.
+  ensamblador:
+    modelo: deepseek-v4-pro
+    proveedor: deepseek
+
+  # La tropa. Aquí es donde se gasta el volumen, así que aquí es donde
+  # importa el precio por token y, sobre todo, que NO devuelva vacío.
+  tropa:
+    modelo: z-ai/glm-5.3-flash
+    proveedor: openrouter
+    paralelo: 8
+
+  # Juez barato que aprueba o rechaza cada salida (~$0.00002 por llamada).
+  # Regla dura: el juez debe ser órdenes de magnitud más barato que el
+  # escalón al que escala, si no la cascada no paga.
+  juez:
+    modelo: typesafe/jev-1.13
+    proveedor: openrouter
+
+# Alternativas probadas, por si quieres cambiar de tropa:
+#
+#   deepseek-flash          barato y rápido, pero su razonamiento se come el
+#                           presupuesto de salida si no lo apagas (medimos 17%
+#                           de respuestas vacías). Apágalo con thinking: none.
+#   z-ai/glm-5.3-flash      con effort low no gasta NI UN token de razonamiento
+#                           (medido). 0% de vacías en nuestro banco de pruebas.
+#   claude-opus-5           cuando la tarea de verdad lo amerita. Caro.
+
+# Ruteo de proveedor en OpenRouter. Un mismo modelo lo sirven decenas de
+# proveedores con capacidades distintas, y OpenRouter descarta EN SILENCIO
+# los parámetros que el proveedor enrutado no soporta. Esto evita caer en
+# uno que ignore tu esquema de salida sin avisarte.
+openrouter:
+  proveedores: [DeepInfra, Morph, Crusoe]
+  exigir_parametros: true
+  permitir_respaldo: true
+
+# Techos de gasto. El enjambre se detiene solo al llegar aquí.
+presupuesto_usd:
+  deepseek: 10
+  openrouter: 10
+  anthropic: 0     # 0 = prohibido. Súbelo a propósito, nunca por accidente.

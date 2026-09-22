@@ -1,0 +1,11 @@
+{
+  "task": "Ejemplo: tres subtareas independientes, que es cuando el paralelismo paga.",
+  "tasks": [
+    {"id": "t1", "thinking": "none", "filename": "resumen.md",
+     "prompt": "Resume en 3 viñetas qué hace un orquestador tipo enjambre. Breve."},
+    {"id": "t2", "thinking": "none", "filename": "riesgos.json",
+     "prompt": "Devuelve SOLO JSON crudo: {\"riesgos\":[\"...\"]}. Tres riesgos de usar modelos baratos en paralelo."},
+    {"id": "t3", "thinking": "low", "filename": "decision.md",
+     "prompt": "¿Cuándo NO conviene paralelizar agentes? Responde en 2 frases, concreto."}
+  ]
+}

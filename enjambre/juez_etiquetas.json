@@ -1,0 +1,215 @@
+{
+ "nota": "Casos contrastados por el General contra la verdad verificada, 2026-09-22",
+ "casos": [
+  {
+   "fuente": "gate_parches",
+   "id": "c_marco[0]",
+   "juez_aprobo": false,
+   "realmente_bueno": true,
+   "tipo": "lote de parches"
+  },
+  {
+   "fuente": "gate_parches",
+   "id": "c_marco[1]",
+   "juez_aprobo": false,
+   "realmente_bueno": true,
+   "tipo": "lote de parches"
+  },
+  {
+   "fuente": "gate_parches",
+   "id": "c_sondeo[0]",
+   "juez_aprobo": false,
+   "realmente_bueno": true,
+   "tipo": "lote de parches"
+  },
+  {
+   "fuente": "gate_parches",
+   "id": "c_sondeo[1]",
+   "juez_aprobo": false,
+   "realmente_bueno": true,
+   "tipo": "lote de parches"
+  },
+  {
+   "fuente": "gate_parches",
+   "id": "c_sondeo[2]",
+   "juez_aprobo": false,
+   "realmente_bueno": true,
+   "tipo": "lote de parches"
+  },
+  {
+   "fuente": "gate_parches",
+   "id": "c_sondeo[3]",
+   "juez_aprobo": false,
+   "realmente_bueno": true,
+   "tipo": "lote de parches"
+  },
+  {
+   "fuente": "gate_parches",
+   "id": "c_tertu[0]",
+   "juez_aprobo": false,
+   "realmente_bueno": true,
+   "tipo": "lote de parches"
+  },
+  {
+   "fuente": "gate_parches",
+   "id": "c_tertu[1]",
+   "juez_aprobo": false,
+   "realmente_bueno": true,
+   "tipo": "lote de parches"
+  },
+  {
+   "fuente": "gate_parches",
+   "id": "c_tertu[2]",
+   "juez_aprobo": false,
+   "realmente_bueno": true,
+   "tipo": "lote de parches"
+  },
+  {
+   "fuente": "gate_parches",
+   "id": "c_infancia[0]",
+   "juez_aprobo": true,
+   "realmente_bueno": true,
+   "tipo": "lote de parches"
+  },
+  {
+   "fuente": "swarm",
+   "id": "h_datos2[0]",
+   "juez_aprobo": false,
+   "realmente_bueno": true,
+   "tipo": "verificacion de datos"
+  },
+  {
+   "fuente": "swarm",
+   "id": "h_datos2[1]",
+   "juez_aprobo": false,
+   "realmente_bueno": true,
+   "tipo": "verificacion de datos"
+  },
+  {
+   "fuente": "swarm",
+   "id": "h_datos2[2]",
+   "juez_aprobo": false,
+   "realmente_bueno": true,
+   "tipo": "verificacion de datos"
+  },
+  {
+   "fuente": "swarm",
+   "id": "h_datos2[3]",
+   "juez_aprobo": false,
+   "realmente_bueno": true,
+   "tipo": "verificacion de datos"
+  },
+  {
+   "fuente": "swarm",
+   "id": "h_datos2[caqueta]",
+   "juez_aprobo": true,
+   "realmente_bueno": false,
+   "tipo": "verificacion de datos"
+  },
+  {
+   "fuente": "swarm",
+   "id": "h_voz[despiste]",
+   "juez_aprobo": true,
+   "realmente_bueno": false,
+   "tipo": "verificacion de datos"
+  },
+  {
+   "fuente": "swarm",
+   "id": "h_voz[hash]",
+   "juez_aprobo": true,
+   "realmente_bueno": false,
+   "tipo": "verificacion de datos"
+  },
+  {
+   "fuente": "swarm",
+   "id": "ab_muestreo",
+   "juez_aprobo": false,
+   "realmente_bueno": true,
+   "tipo": "generacion de codigo"
+  },
+  {
+   "fuente": "swarm",
+   "id": "ab_calibra",
+   "juez_aprobo": false,
+   "realmente_bueno": true,
+   "tipo": "generacion de codigo"
+  },
+  {
+   "fuente": "swarm",
+   "id": "ab_valida",
+   "juez_aprobo": false,
+   "realmente_bueno": false,
+   "tipo": "generacion de codigo"
+  },
+  {
+   "fuente": "swarm",
+   "id": "glm_bench",
+   "juez_aprobo": false,
+   "realmente_bueno": true,
+   "tipo": "generacion de codigo"
+  },
+  {
+   "fuente": "swarm",
+   "id": "glm_llm",
+   "juez_aprobo": true,
+   "realmente_bueno": true,
+   "tipo": "generacion de codigo"
+  },
+  {
+   "fuente": "swarm",
+   "id": "prosa0",
+   "juez_aprobo": true,
+   "realmente_bueno": true,
+   "tipo": "prosa y dossiers"
+  },
+  {
+   "fuente": "swarm",
+   "id": "prosa1",
+   "juez_aprobo": true,
+   "realmente_bueno": true,
+   "tipo": "prosa y dossiers"
+  },
+  {
+   "fuente": "swarm",
+   "id": "prosa2",
+   "juez_aprobo": true,
+   "realmente_bueno": true,
+   "tipo": "prosa y dossiers"
+  },
+  {
+   "fuente": "swarm",
+   "id": "prosa3",
+   "juez_aprobo": true,
+   "realmente_bueno": true,
+   "tipo": "prosa y dossiers"
+  },
+  {
+   "fuente": "swarm",
+   "id": "prosa4",
+   "juez_aprobo": true,
+   "realmente_bueno": true,
+   "tipo": "prosa y dossiers"
+  },
+  {
+   "fuente": "swarm",
+   "id": "prosa5",
+   "juez_aprobo": true,
+   "realmente_bueno": true,
+   "tipo": "prosa y dossiers"
+  },
+  {
+   "fuente": "swarm",
+   "id": "prosa6",
+   "juez_aprobo": true,
+   "realmente_bueno": true,
+   "tipo": "prosa y dossiers"
+  },
+  {
+   "fuente": "swarm",
+   "id": "prosa7",
+   "juez_aprobo": true,
+   "realmente_bueno": true,
+   "tipo": "prosa y dossiers"
+  }
+ ]
+}
