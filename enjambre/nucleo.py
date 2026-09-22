@@ -440,11 +440,12 @@ def fallas_a_nota(fallas):
 # (que compile, que parsee, que el match sea único), no el juez.
 _SENAL_VERIFICABLE = (
     "devuelve solo json", "json crudo", "parches", "buscar", "reemplazar",
-    "cifras exactas", "cifras", "auditoría", "auditoria", "hallazgos",
+    "cifras exactas", "auditoría", "auditoria", "hallazgos",
     "código completo", "ejecutable",
 )
 
 # Prosa sujeta a criterio → aquí el juez acierta 8 de 8: sí gastar la llamada.
+_SENAL_ESTRUCTURAL = ("devuelve solo json", "json crudo", "parches", "reemplazar")
 _SENAL_PROSA = (
     "redacta", "resume", "explica", "guion", "guión", "narrativa",
     "dossier", "escribe",
@@ -475,12 +476,18 @@ def clasificar_juez(task_prompt: str, filename: str = "") -> tuple[bool, str]:
     if fn.endswith(_EXT_VERIFICABLE):
         return False, _MOTIVO_VERIFICABLE
 
+    # La extensión manda en los dos sentidos. Un .md es prosa aunque el prompt
+    # diga "cifras": pasaba con "no inventes cifras", y cinco documentos se
+    # quedaron sin juez justo donde acierta 8 de 8. Solo una señal estructural
+    # fuerte (JSON crudo, parches) le gana a la extensión.
+    if fn.endswith(_EXT_PROSA):
+        if any(s in p for s in _SENAL_ESTRUCTURAL):
+            return False, _MOTIVO_VERIFICABLE
+        return True, _MOTIVO_PROSA
+
     for s in _SENAL_VERIFICABLE:
         if s in p:
             return False, _MOTIVO_VERIFICABLE
-
-    if fn.endswith(_EXT_PROSA):
-        return True, _MOTIVO_PROSA
 
     for s in _SENAL_PROSA:
         if s in p:
@@ -793,6 +800,18 @@ class Swarm:
         ids = {t["id"] for t in tasks}
         for t in tasks:  # sanear deps que no existen para no colgar el DAG
             t["deps"] = [d for d in t.get("deps", []) if d in ids]
+        # Dos tareas con el mismo archivo se pisan en silencio: la segunda
+        # sobrescribe a la primera y el informe lista el nombre dos veces. Se
+        # resuelve al cargar el plan, prefijando el id a la repetida.
+        vistos = set()
+        for t in tasks:
+            nombre = Path(t.get("filename") or f"{t['id']}.md").name
+            if nombre.lower() in vistos:
+                nuevo = f"{t['id']}-{nombre}"
+                print(f"⚠️  {t['id']}: «{nombre}» ya lo escribe otra tarea → {nuevo}")
+                t["filename"] = nuevo
+                nombre = nuevo
+            vistos.add(nombre.lower())
         self.done_events = {t["id"]: asyncio.Event() for t in tasks}
         if self.cached_plan is None or getattr(self, "plan_needs_log", False):
             self.log({"event": "plan", "task": self.task, "tasks": tasks})
