@@ -526,9 +526,13 @@ async function fetchRows(){
   try{
     let list;
     if(cfg.src==="local") list=await (await fetch("feed.json?x="+Date.now())).json();
-    else{list=await (await fetch(cfg.url+"/rest/v1/army_events?select=*&order=id.desc&limit=2000",
-      {headers:{apikey:cfg.key}})).json();
-      if(!Array.isArray(list)) throw 0;}
+    else{const r=await fetch(cfg.url+"/rest/v1/army_events?select=*&order=id.desc&limit=2000",
+        {headers:{apikey:cfg.key}});
+      /* Una base bien cerrada solo deja INSERTAR: leer da 401, que es lo
+         correcto y no un fallo. Decirlo, en vez de quedarse en "sin conexión". */
+      if(r.status===401||r.status===403) throw new Error("solo-escritura");
+      list=await r.json();
+      if(!Array.isArray(list)) throw new Error("respuesta-rara");}
     /* orden estable por fila: ts si parsea, si no id; desempate por id (dentro
        del mismo segundo Supabase venía id.desc y 'done' salía antes que 'shipped') */
     /* La hora buena es payload.t (la escribió el enjambre al ocurrir el evento).
@@ -539,9 +543,34 @@ async function fetchRows(){
       r._k=r._t??(Number.isFinite(+r.id)?+r.id:i);});
     list.sort((a,b)=>a._k-b._k||((+a.id||0)-(+b.id||0)));
     ingest(list); render(); lamp(true);
-  }catch(e){lamp(false);}
+  }catch(e){
+    lamp(false);
+    if(e&&e.message==="solo-escritura"){
+      avisoFuente("Tu base solo permite escribir, que es lo seguro. "+
+        "El tablero lee de tu disco: cambia la fuente a «local» en Ajustes.");
+    }else if(cfg.src==="local"){
+      avisoFuente("No encuentro /feed.json. Levanta el servidor con "+
+        "«python enjambre/servir.py» y recarga.");
+    }else avisoFuente("");
+  }
   finally{_fetching=false;}
 }
+/* Un aviso en la cabecera cuando la fuente de datos no da lo que se espera.
+   Vale más una frase que diga qué hacer que una lamparita apagada. */
+function avisoFuente(texto){
+  let n=$("#avisofuente");
+  if(!texto){ if(n) n.remove(); return; }
+  if(!n){
+    n=document.createElement("div"); n.id="avisofuente";
+    n.style.cssText="grid-area:top; align-self:end; justify-self:center;"+
+      "font-size:11px; color:var(--work); background:var(--panel2);"+
+      "border:var(--px) solid var(--work); padding:5px 11px; z-index:30;"+
+      "box-shadow:2px 2px 0 #000a; max-width:560px; text-align:center";
+    $("#app").append(n);
+  }
+  if(n.textContent!==texto) n.textContent=texto;
+}
+
 function lamp(on){$("#lamp").classList.toggle("on",on);
   /* la lámpara dice si hay datos llegando; el distintivo de al lado dice si
      estás mirando la última corrida. Eran dos "en vivo" y se pisaban. */
