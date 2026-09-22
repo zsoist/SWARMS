@@ -10,13 +10,13 @@ navegador ya apuntando a la última corrida. No hay build ni dependencias.
 import argparse
 import http.server
 import json
-import os
 import socketserver
+import sys
 import threading
 import webbrowser
 from pathlib import Path
 
-RAIZ = Path(os.environ.get("ENJAMBRE_DIR", Path.cwd()))
+RAIZ = Path(__file__).resolve().parent.parent
 TABLERO = Path(__file__).resolve().parent / "tablero"
 
 
@@ -26,11 +26,65 @@ def corridas():
                   key=lambda d: d.name, reverse=True)
 
 
+def resumen(d):
+    """Lo que hay que saber de una corrida SIN abrirla: qué se le pidió, cuándo,
+    cuánto tardó, cuánto costó y cuántas tareas salieron.
+
+    Un identificador como '20260922-002225-swarm' no le dice nada a nadie. Lo que
+    identifica a una corrida es LO QUE SE LE PIDIÓ."""
+    info = {"id": d.name, "reto": "", "cuando": "", "tareas": 0,
+            "entregas": 0, "segundos": None, "costo": 0.0, "aprobadas": 0}
+    # fecha legible desde el nombre: 20260922-002225 → 22 sep, 00:22
+    try:
+        f = d.name.split("-")[0]
+        h = d.name.split("-")[1]
+        MES = ["ene", "feb", "mar", "abr", "may", "jun",
+               "jul", "ago", "sep", "oct", "nov", "dic"]
+        info["cuando"] = (f"{int(f[6:8])} {MES[int(f[4:6]) - 1]} · "
+                          f"{h[:2]}:{h[2:4]}")
+    except Exception:
+        info["cuando"] = d.name
+    for linea in (d / "swarm.jsonl").read_text(errors="ignore").splitlines():
+        try:
+            e = json.loads(linea)
+        except Exception:
+            continue
+        ev = e.get("event")
+        if ev == "start" and e.get("task"):
+            info["reto"] = e["task"]
+        elif ev == "plan":
+            info["tareas"] = len(e.get("tasks") or [])
+        elif ev == "ship":
+            info["entregas"] += 1
+        elif ev == "jev" and (e.get("p") or 0) >= 0.65:
+            info["aprobadas"] += 1
+        elif ev == "done":
+            info["segundos"] = e.get("seconds") or e.get("secs")
+            info["costo"] = sum((e.get("spent") or e.get("cost") or {}).values())
+    if not info["reto"]:
+        info["reto"] = "(sin título)"
+    return info
+
+
 class Handler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         # índice de corridas, para que el tablero pueda ofrecerlas en un menú
+        if self.path == "/salud.json":
+            # el visor pregunta al arrancar: ¿está todo conectado?
+            try:
+                import salud as _s
+                datos = _s.estado()
+            except Exception as e:
+                datos = {"error": f"no pude chequear: {e}"}
+            cuerpo = json.dumps(datos, ensure_ascii=False, default=str).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(cuerpo)))
+            self.end_headers()
+            self.wfile.write(cuerpo)
+            return
         if self.path == "/corridas.json":
-            datos = [{"nombre": d.name, "ruta": f"/runs/{d.name}/swarm.jsonl"}
+            datos = [{**resumen(d), "ruta": f"/runs/{d.name}/swarm.jsonl"}
                      for d in corridas()]
             cuerpo = json.dumps(datos, ensure_ascii=False).encode()
             self.send_response(200)
