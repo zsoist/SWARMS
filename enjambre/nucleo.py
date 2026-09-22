@@ -33,19 +33,25 @@ from pathlib import Path
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
-ROOT = Path(__file__).resolve().parent.parent
+# La carpeta de trabajo es donde corres el comando, no donde quedó instalado
+# el paquete: ahí se leen .env y se escriben runs/. ENJAMBRE_DIR la fija.
+ROOT = Path(os.environ.get("ENJAMBRE_DIR", Path.cwd()))
 load_dotenv(ROOT / ".env")
 
 MAX_AGENTS = int(os.environ.get("MAX_DEEPSEEK_AGENTS", "8"))
 FABLE_ENABLED = os.environ.get("FABLE_ENABLED", "0") == "1"
 FABLE_MODEL = os.environ.get("FABLE_MODEL", "claude-fable-5-1")
 
+# Con UNA llave tiene que arrancar. Antes se leían las dos con os.environ[...]
+# y sin la de DeepSeek el comando moría con KeyError al importar, aunque la
+# flota por defecto (GLM) solo usa OpenRouter. La falta de llave se reporta
+# cuando de verdad se necesita, en _exigir_llaves().
 deepseek = AsyncOpenAI(
-    api_key=os.environ["DEEPSEEK_API_KEY"],
+    api_key=os.environ.get("DEEPSEEK_API_KEY") or "falta-DEEPSEEK_API_KEY",
     base_url=os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
 )
 openrouter = AsyncOpenAI(
-    api_key=os.environ["OPENROUTER_API_KEY"],
+    api_key=os.environ.get("OPENROUTER_API_KEY") or "falta-OPENROUTER_API_KEY",
     base_url=os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
 )
 
@@ -129,6 +135,33 @@ PROVEEDORES_OR = os.environ.get(
     "OPENROUTER_PROVIDERS", "DeepInfra,Morph,Crusoe"
 ).split(",")
 
+# Afinado por modelo. Un mismo slug lo sirven decenas de proveedores con
+# latencias que difieren hasta 17 veces en el primer token, y con tareas cortas
+# en paralelo lo que manda es el primer token, no el throughput.
+#
+# Para GLM, Z.ai recomienda temperature 1.0 y top_p 0.95, y advierte que NO se
+# toquen los dos a la vez. El max_tokens tiene que ser generoso: el modelo
+# razona obligatoriamente, y si el razonamiento se topa con el techo, devuelve
+# una cadena vacía y te la cobra igual.
+AFINADO = {
+    "glm": {
+        "max_tokens": 8192,
+        "top_p": 0.95,
+        "temp_directo": 1.0,     # Z.ai: no ajustar temperature y top_p a la vez
+        "temp_razonando": 1.0,
+        "sort": "latency",       # el cuello con tareas cortas es el primer token
+    },
+}
+
+
+def afinado_de(model: str) -> dict:
+    """Los parámetros propios del modelo, si los tiene medidos."""
+    m = (model or "").lower()
+    for clave, cfg in AFINADO.items():
+        if clave in m:
+            return cfg
+    return {}
+
 
 async def llm(
     prompt: str,
@@ -175,24 +208,31 @@ async def llm(
         # soporta salida estructurada ni `seed`. `require_parameters` obliga a
         # enrutar solo a proveedores que aceptan TODO lo que mandamos, así que
         # nunca caemos ahí por accidente.
+        af = afinado_de(model)
+        prov = {"order": PROVEEDORES_OR, "require_parameters": True,
+                "allow_fallbacks": True,
+                # Los prompts llevan trabajo del usuario. "deny" saca de la
+                # rotación a los proveedores que se reservan el derecho a
+                # entrenar con lo que les mandas.
+                "data_collection": "deny",
+                # Techo por petición, en dólares por millón de tokens. El mismo
+                # modelo y los mismos 25 tokens nos costaron 5.25e-06 con un
+                # proveedor y 7.25e-06 con otro: sin techo, una ruta cara pasa
+                # desapercibida hasta que aparece en la factura.
+                "max_price": MAX_PRECIO}
+        if af.get("sort"):
+            prov["sort"] = af["sort"]
+        cuerpo = {"usage": {"include": True}, "provider": prov, **extra_or}
+        if af.get("top_p"):
+            cuerpo["top_p"] = af["top_p"]
         r = await openrouter.chat.completions.create(
             model=model, messages=messages, timeout=600,
-            temperature=temperature,
-            extra_body={
-                "usage": {"include": True},
-                "provider": {
-                    "order": PROVEEDORES_OR,
-                    "require_parameters": True,
-                    "allow_fallbacks": True,
-                    # Los prompts llevan trabajo tuyo: "deny" saca de la
-                    # rotación a quien se reserve el derecho a entrenar con ellos.
-                    "data_collection": "deny",
-                    # Techo por petición. Mismo modelo y mismos tokens nos
-                    # costaron 5.25e-06 con un proveedor y 7.25e-06 con otro.
-                    "max_price": MAX_PRECIO,
-                },
-                **extra_or,
-            },
+            # sin techo explícito, una respuesta larga puede cortarse justo
+            # donde el razonamiento se comió el presupuesto
+            max_tokens=af.get("max_tokens", 4096),
+            temperature=(af.get("temp_directo" if thinking == "none"
+                                else "temp_razonando", temperature)),
+            extra_body=cuerpo,
         )
         budget.add("openrouter", model, r.usage)
     else:
@@ -258,6 +298,27 @@ async def brain(prompt: str, rank: str = "general") -> str:
     return await llm(prompt, model=BRAIN_MODEL, thinking="medium")
 
 
+_CERCA = re.compile(r"\A\s*```[a-zA-Z0-9_+-]*[ \t]*\n(.*?)\n?```\s*\Z", re.S)
+
+
+def sin_cerca(texto: str, extension: str = "") -> str:
+    """Quita la cerca de código con la que el modelo envuelve el entregable.
+
+    Pasa todo el tiempo aunque el prompt lo prohíba, y en un archivo de código
+    la cerca lo deja inservible: el navegador o el intérprete revientan en la
+    primera línea. En un .md una cerca puede ser legítima (un ejemplo dentro
+    del texto), así que ahí solo se quita si envuelve el archivo ENTERO.
+    """
+    if not texto:
+        return texto
+    m = _CERCA.match(texto)
+    if not m:
+        return texto
+    if extension.lower() in (".md", ".markdown", ".txt") and texto.count("```") > 2:
+        return texto          # hay más cercas dentro: son parte del contenido
+    return m.group(1) + "\n"
+
+
 def extract_json(text: str) -> dict:
     text = re.sub(r"^```(?:json)?|```$", "", text.strip(), flags=re.MULTILINE)
     m = re.search(r"\{.*\}", text, re.DOTALL)
@@ -275,8 +336,8 @@ Asigna "thinking" por tarea — optimiza el costo: "none" para tareas mecánicas
 "high" SOLO para razonamiento pesado (matemáticas, pruebas, algoritmos, debugging \
 sutil). Escribe restricciones MEDIBLES y sin ambigüedad ("máximo 250 caracteres", \
 no "de 250 caracteres"): un inspector automático las verificará literalmente. \
-Responde SOLO JSON:
-{{"tasks": [{{"id": "t1", "prompt": "...", "deps": [], "thinking": "none", \
+Añade un campo "titulo" por tarea: frase corta en español, en infinitivo, de máximo 45 caracteres, sin jerga técnica y sin repetir el id — es lo que verá una persona en el visor para entender qué hace la tarea. Responde SOLO JSON:
+{{"tasks": [{{"id": "t1", "prompt": "...", "deps": [], "titulo": "redactar la introducción", "thinking": "none", \
 "filename": "opcional.ext"}}]}}
 Máximo {max_tasks} tareas.
 
@@ -370,19 +431,70 @@ def fallas_a_nota(fallas):
 # dispara el sesgo de posición. Así que el juez solo opina donde acierta; lo
 # demás lo deciden las compuertas deterministas (que compile, que parsee, que
 # el match sea único), que no se equivocan.
-SIN_JUEZ = (
-    "devuelve solo json", "json crudo", "verifica", "auditoría", "auditoria",
-    "hallazgos", "parches", "buscar", "reemplazar", "cifras", "exactitud",
+# La lista de palabras prohibidas se retiró: era frágil (una tarea de prosa que
+# menciona 'verifica' perdía el juez; una de datos que no la mencionaba lo
+# gastaba). La decisión ahora es por SEÑALES y devuelve el motivo, medido en
+# calibrar_juez.py: prosa 8/8, código 2/5, lote de parches 1/10, datos 0/7.
+
+# Entregable verificable por máquina → lo deciden las compuertas deterministas
+# (que compile, que parsee, que el match sea único), no el juez.
+_SENAL_VERIFICABLE = (
+    "devuelve solo json", "json crudo", "parches", "buscar", "reemplazar",
+    "cifras exactas", "cifras", "auditoría", "auditoria", "hallazgos",
+    "código completo", "ejecutable",
 )
 
+# Prosa sujeta a criterio → aquí el juez acierta 8 de 8: sí gastar la llamada.
+_SENAL_PROSA = (
+    "redacta", "resume", "explica", "guion", "guión", "narrativa",
+    "dossier", "escribe",
+)
 
-def juez_aplica(task_prompt: str) -> bool:
-    """¿Vale la pena gastar una llamada de juez en esta tarea?"""
+_MOTIVO_VERIFICABLE = "entregable verificable por máquina: lo deciden las compuertas"
+_MOTIVO_PROSA = "prosa: el juez acierta 8 de 8 aquí"
+_MOTIVO_PROSA_PROBABLE = "sin señal clara: prosa es lo más probable y el juez acierta 8 de 8 ahí"
+
+# Extensiones de código o datos → verificable por máquina; de texto → prosa.
+_EXT_VERIFICABLE = (".py", ".js", ".json", ".yaml", ".csv")
+_EXT_PROSA = (".md", ".txt")
+
+
+def clasificar_juez(task_prompt: str, filename: str = "") -> tuple[bool, str]:
+    """¿Vale la pena gastar una llamada de juez? Devuelve (aplica, motivo).
+
+    Clasificación por señales del entregable, no por palabras prohibidas:
+    verificable por máquina → compuertas deterministas; prosa → juez (8/8);
+    sin señal clara → decide el filename de la tarea.
+    """
     p = task_prompt.lower()
-    return not any(m in p for m in SIN_JUEZ)
+    fn = (filename or "").lower()
+
+    # El TIPO DE ENTREGABLE manda sobre el verbo del encargo: "escribe la
+    # función que ordena" es escritura, pero lo que sale es código, y el código
+    # lo juzga el intérprete mejor que el juez (medido: 2 aciertos de 5).
+    if fn.endswith(_EXT_VERIFICABLE):
+        return False, _MOTIVO_VERIFICABLE
+
+    for s in _SENAL_VERIFICABLE:
+        if s in p:
+            return False, _MOTIVO_VERIFICABLE
+
+    if fn.endswith(_EXT_PROSA):
+        return True, _MOTIVO_PROSA
+
+    for s in _SENAL_PROSA:
+        if s in p:
+            return True, _MOTIVO_PROSA
+
+    return True, _MOTIVO_PROSA_PROBABLE
 
 
-async def jev_review(task_prompt: str, output: str):
+def juez_aplica(task_prompt: str, filename: str = "") -> bool:
+    """Compatibilidad: firma nueva, solo el booleano."""
+    return clasificar_juez(task_prompt, filename)[0]
+
+
+async def jev_review(task_prompt: str, output: str, filename: str = ""):
     """Jev como inspector Y enrutador: UNA llamada, tres decisiones tipadas.
 
     - cumple (noul): ¿el output cumple la tarea? → gate
@@ -393,7 +505,12 @@ async def jev_review(task_prompt: str, output: str):
     ~$0.00003 por inspección; output tipado, sin parsing, sin loops de juez.
     Presupuesto: JEV_MAX_CALLS (env, def. 60) por corrida; agotado → None (gate() local).
     """
-    if not juez_aplica(task_prompt) or not jev_budget_ok():
+    aplica, motivo = clasificar_juez(task_prompt, filename)
+    if not aplica:
+        # no es un fallo: es una decisión. El visor muestra el motivo para que
+        # el usuario entienda por qué esta tarea no tiene veredicto.
+        return {"sin_juez": True, "motivo": motivo}
+    if not jev_budget_ok():
         return None
     try:
         import httpx
@@ -553,6 +670,7 @@ class Swarm:
     def ship(self, tid: str, filename: str | None, content: str):
         """Shippear YA: el artefacto toca disco en cuanto existe (escritura atómica)."""
         path = self.ship_dir / Path(filename or f"{tid}.md").name  # sin rutas del planner
+        content = sin_cerca(content, path.suffix)
         tmp = path.with_suffix(path.suffix + ".tmp")
         tmp.write_text(content)
         os.replace(tmp, path)
@@ -612,7 +730,11 @@ class Swarm:
                                     model=model, system=WORKER_CONSTITUTION,
                                     thinking=think)
                     continue
-                jv = await jev_review(t["prompt"], out)
+                jv = await jev_review(t["prompt"], out, t.get("filename", ""))
+                if jv and jv.get("sin_juez"):
+                    self.log({"event": "jev", "id": t["id"], "p": None,
+                              "sin_juez": True, "motivo": jv["motivo"]})
+                    break
                 if jv is None:  # Jev caído → gate heurístico local, sin reintentos ciegos
                     if not gate(out) and attempt == 0:
                         out = await llm(f"Este output falló ({out[:300]!r}). Entrega el "
@@ -718,7 +840,9 @@ class Swarm:
             j = jevs.get(tid)
             fn = tasks and next((t.get("filename") for t in tasks if t["id"] == tid), None)
             print(f"   • {self.ship_dir / (fn or tid + '.md')}"
-                  + (f"  [Jev {j['p']*100:.0f}%]" if j else ""))
+                  + (f"  [sin juez: {j.get('motivo','')[:34]}]" if j and j.get("sin_juez")
+                     else f"  [Jev {j['p']*100:.0f}%]" if j and j.get("p") is not None
+                     else ""))
         print(f"   • {self.run_dir}/FINAL.md  (entregable ensamblado)")
         # drenar telemetría antes de que muera el loop (o el 'done' nunca llega)
         self._flush()
@@ -726,9 +850,25 @@ class Swarm:
             await asyncio.gather(*self._beams, return_exceptions=True)
 
 
-if __name__ == "__main__":
+def _exigir_llaves():
+    """Falla temprano y en castellano, no con un 401 a mitad de corrida."""
+    usa_or = "/" in WORKER_MODEL or "/" in BRAIN_MODEL
+    usa_ds = not ("/" in WORKER_MODEL and "/" in BRAIN_MODEL)
+    faltan = []
+    if usa_or and not os.environ.get("OPENROUTER_API_KEY"):
+        faltan.append("OPENROUTER_API_KEY")
+    if usa_ds and not os.environ.get("DEEPSEEK_API_KEY"):
+        faltan.append("DEEPSEEK_API_KEY")
+    if faltan:
+        sys.exit(f"⛔ falta {', '.join(faltan)} en {ROOT / '.env'} "
+                 f"(flota «{ENJAMBRE}»: {WORKER_MODEL} + {BRAIN_MODEL})")
+
+
+def cli():
+    """Punto de entrada del comando `enjambre`."""
     if len(sys.argv) < 2:
-        sys.exit('Uso: swarm.py "reto" | --demo | --resume runs/<dir> | --plan plan.json')
+        sys.exit('Uso: enjambre "reto" | --demo | --resume runs/<dir> | --plan plan.json')
+    _exigir_llaves()
     if sys.argv[1] == "--plan":
         # Plan autorado por Fable (Claude Code): los workers ejecutan tal cual.
         # No loggear aquí: fuera del event loop el beam a Supabase se pierde;
@@ -745,11 +885,13 @@ if __name__ == "__main__":
         asyncio.run(Swarm("(resume)", resume_dir=rd).run())
         sys.exit(0)
     task = (
-        "Crea el kit de demo del Build Day: (1) un one-pager en markdown que "
-        "explique la arquitectura Fable-orquesta-8-DeepSeek, (2) un guion de "
-        "demo de 2 minutos, (3) tres preguntas difíciles que el público podría "
-        "hacer, con respuestas."
+        "Escribe un README corto para un proyecto que orquesta agentes "
+        "baratos en paralelo: qué hace, cómo se instala y un ejemplo."
         if sys.argv[1] == "--demo"
         else " ".join(sys.argv[1:])
     )
     asyncio.run(Swarm(task).run())
+
+
+if __name__ == "__main__":
+    cli()

@@ -20,7 +20,7 @@ import re
 # inventara los modelos, mentiría justo donde más importa.
 try:
     from dotenv import load_dotenv
-    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+    load_dotenv(Path(os.environ.get("ENJAMBRE_DIR", Path.cwd())) / ".env")
 except Exception:
     pass
 
@@ -57,7 +57,8 @@ _CFG = _leer_config()
 
 import httpx
 
-_DIR_RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# la carpeta donde corres el enjambre, no donde quedó instalado el paquete
+_DIR_RAIZ = os.environ.get("ENJAMBRE_DIR", os.getcwd())
 _DIR_RUNS = os.path.join(_DIR_RAIZ, 'runs')
 
 # nombre: (variable de entorno con la llave, URL de probe GET gratis, headers)
@@ -150,7 +151,7 @@ def _gastado():
     veces y sumaba números que no eran dinero.
     """
     import json
-    raiz = Path(__file__).resolve().parent.parent
+    raiz = Path(_DIR_RAIZ)
     total, corridas = 0.0, 0
     for log in (raiz / "runs").glob("*-swarm/swarm.jsonl"):
         gasto = None
