@@ -8,6 +8,7 @@ Sirve el tablero y las corridas de runs/ en un servidor local, y abre el
 navegador ya apuntando a la última corrida. No hay build ni dependencias.
 """
 import argparse
+import datetime as _dt
 import http.server
 import json
 import socketserver
@@ -66,6 +67,38 @@ def resumen(d):
     return info
 
 
+def _feed():
+    """runs/*/swarm.jsonl → las filas que espera el visor.
+
+    La hora buena es la que el enjambre escribió al ocurrir el evento ("t").
+    Las corridas viejas que no la traen la sintetizan desde el nombre del
+    directorio, espaciando los eventos, para que la línea de tiempo no se
+    aplane en un solo instante.
+    """
+    filas, i = [], 0
+    for jl in sorted(RAIZ.glob("runs/*/swarm.jsonl")):
+        corrida = jl.parent.name
+        try:
+            base = _dt.datetime.strptime(corrida[:15], "%Y%m%d-%H%M%S").replace(
+                tzinfo=_dt.timezone.utc)
+        except ValueError:
+            base = _dt.datetime.now(_dt.timezone.utc)
+        for n, linea in enumerate(jl.read_text(errors="ignore").splitlines()):
+            try:
+                p = json.loads(linea)
+            except json.JSONDecodeError:
+                continue
+            i += 1
+            secs = p["t"] if isinstance(p.get("t"), (int, float)) \
+                else base.timestamp() + n * 4
+            filas.append({
+                "id": i, "run_id": corrida,
+                "ts": _dt.datetime.fromtimestamp(secs, tz=_dt.timezone.utc).isoformat(),
+                "event": p.get("event"), "task_id": p.get("id"), "payload": p,
+            })
+    return filas
+
+
 class Handler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         # índice de corridas, para que el tablero pueda ofrecerlas en un menú
@@ -89,6 +122,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             cuerpo = json.dumps(datos, ensure_ascii=False).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(cuerpo)))
+            self.end_headers()
+            self.wfile.write(cuerpo)
+            return
+        if self.path.split("?")[0] == "/feed.json":
+            # El visor en modo local lee de aquí. Se arma al vuelo desde
+            # runs/, así nadie necesita una base de datos en la nube —ni una
+            # llave en el código— para ver su propio tablero.
+            cuerpo = json.dumps(_feed(), ensure_ascii=False).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(cuerpo)))
             self.end_headers()
             self.wfile.write(cuerpo)

@@ -48,16 +48,11 @@ canvas{image-rendering:pixelated; display:block}
    el resto crece hacia abajo cuanto haga falta. */
 #app{min-height:100%; display:grid; gap:8px; padding:8px;
   grid-template-columns:332px minmax(0,1fr) 288px;
-  grid-template-areas:"top top top" "agents flujo side" "agents board side"
-                      "agents feed ask";
-  /* La columna de agentes es alta y abarca las tres filas del medio. Sin fijar
-     las filas, su sobrante se repartía entre ellas y dejaba huecos bajo cada
-     sección plegada; así todo el sobrante cae al final. */
-  grid-template-rows:auto auto auto 1fr}
-/* Cada panel mide lo que mide su contenido. Sin esto, una sección plegada se
-   estiraba para llenar la fila que definen las columnas altas de al lado y
-   dejaba una caja vacía enorme bajo su cabecera. */
-#flujo,#board,#feed,#ask{align-self:start}
+  grid-template-areas:"top top top" "agents centro side";
+  grid-template-rows:auto 1fr}
+/* La columna del medio apila sus paneles y cada uno mide lo que mide. */
+#centro{grid-area:centro; display:flex; flex-direction:column; gap:8px;
+  min-width:0; align-self:start}
 #top{position:sticky; top:8px; z-index:20}
 #agents{position:sticky; top:62px; max-height:calc(100vh - 78px)}
 
@@ -276,8 +271,10 @@ animation:blink 1.2s steps(2) infinite}
 @media (max-width:980px){
   body{overflow:auto}
   #app{height:auto; grid-template-columns:1fr;
-    grid-template-rows:auto auto minmax(300px,52vh) auto auto;
-    grid-template-areas:"top" "agents" "board" "side" "ask" "feed"}
+    grid-template-rows:auto auto auto auto;
+    grid-template-areas:"top" "agents" "centro" "side"}
+  /* en una columna el orden lo manda el DOM, no la rejilla */
+  #centro{align-self:stretch}
   #ask{min-height:220px}
   #grid8{grid-template-columns:1fr 1fr}
   #mission,#clock{display:none}
@@ -305,8 +302,15 @@ animation:blink 1.2s steps(2) infinite}
     <div id="grid8"></div>
   </section>
 
+
+
+  <!-- Una sola celda de rejilla para la columna del medio. Antes eran tres
+       filas, y como las columnas de los lados abarcan las tres, Grid les
+       repartía su altura: una sección plegada de 45px se quedaba con una
+       fila de 277px y el visor se veía lleno de cajas vacías. -->
+  <div id="centro">
   <section id="flujo" class="panel" aria-label="Flujo de trabajo del enjambre"
-           style="grid-area:flujo">
+           >
     <h2><span>cómo trabajó tu enjambre</span><b id="flujoinfo"></b></h2>
     <div id="flujocaja" style="padding:10px"></div>
   </section>
@@ -320,16 +324,6 @@ animation:blink 1.2s steps(2) infinite}
       <code>uv run --project orchestrator python orchestrator/swarm.py "tu reto"</code>
     </div>
   </section>
-
-  <aside id="side">
-    <section class="panel" aria-label="Estado del enjambre">
-      <h2><span>está todo conectado</span><b id="saludok"></b></h2>
-      <div id="saludcaja"></div>
-    </section>
-    <div class="panel"><h2 id="l-stats">hoy</h2><div id="stats"></div></div>
-    <div class="panel"><h2><span id="l-inspector">inspector jev</span></h2><div id="stamps"></div></div>
-    <div class="panel"><h2 id="l-budget">presupuesto</h2><div id="budget"></div></div>
-  </aside>
 
   <section id="feed" class="panel" aria-label="Actividad">
     <h2 id="l-activity">actividad</h2>
@@ -345,6 +339,19 @@ animation:blink 1.2s steps(2) infinite}
       <button id="asksend" class="pxbtn" type="submit">▸</button>
     </form>
   </section>
+  </div>
+
+  <aside id="side">
+    <section class="panel" aria-label="Estado del enjambre">
+      <h2><span>está todo conectado</span><b id="saludok"></b></h2>
+      <div id="saludcaja"></div>
+    </section>
+    <div class="panel"><h2 id="l-stats">hoy</h2><div id="stats"></div></div>
+    <div class="panel"><h2><span id="l-inspector">inspector jev</span></h2><div id="stamps"></div></div>
+    <div class="panel"><h2 id="l-budget">presupuesto</h2><div id="budget"></div></div>
+  </aside>
+
+
 </div>
 
 <div id="mask"><div id="modal" role="dialog">
@@ -374,12 +381,18 @@ animation:blink 1.2s steps(2) infinite}
 <script src="detalle.js"></script>
 <script>
 /* ═══ config ═══ */
-/* El paquete arranca contra TU disco, no contra la nube de nadie: el servidor
-   local sirve runs/ y el visor lee de ahí. Si quieres telemetría remota, pon tu
-   propio Supabase en Ajustes; queda en localStorage, nunca en el repo. */
-const DEF={src:"local",url:"",key:"",poll:3,scale:3,orkey:""};
+/* El paquete arranca contra TU disco, no contra la nube de nadie. Si quieres
+   telemetría remota, pon tu propio Supabase en Ajustes: queda en el
+   navegador, nunca en el repo. */
+const DEF={v:2,src:"local",url:"",key:"",poll:3,scale:3,orkey:""};
 let cfg={...DEF};
 try{cfg={...DEF,...JSON.parse(localStorage.getItem("ag-cfg")||"{}")}}catch(e){}
+/* La configuración vive en el navegador, así que una instalación vieja seguiría
+   apuntando —con credencial incluida— a la base de datos que este archivo ya no
+   trae. La versión marca el corte: lo guardado antes vuelve a leer de tu disco.
+   Si quieres telemetría remota, la vuelves a poner en Ajustes. */
+if(cfg.v!==DEF.v){cfg={...DEF};
+  try{localStorage.setItem("ag-cfg",JSON.stringify(cfg))}catch(e){}}
 const save=()=>{try{localStorage.setItem("ag-cfg",JSON.stringify(cfg))}catch(e){}};
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
