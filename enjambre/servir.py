@@ -96,11 +96,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         return super().do_GET()
 
     def translate_path(self, path):
-        # / → el tablero · /runs/... → las corridas del proyecto
+        """/runs/... son las corridas; todo lo demás sale del visor.
+
+        El visor puede vivir en dashboard/ (con sus sprites y su feed) o en
+        enjambre/tablero/ (el tablero simple que trae el paquete). Se prefiere
+        el primero si existe, porque es el completo.
+        """
         if path.startswith("/runs/"):
             return str(RAIZ / path.lstrip("/"))
-        p = path.lstrip("/") or "index.html"
-        return str(TABLERO / p)
+        rel = path.lstrip("/").split("?")[0] or "index.html"
+        for base in (RAIZ / "dashboard", TABLERO):
+            cand = base / rel
+            if cand.exists():
+                return str(cand)
+        return str(TABLERO / rel)
 
     def log_message(self, *a):
         pass  # sin ruido en la consola
