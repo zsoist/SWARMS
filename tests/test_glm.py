@@ -221,3 +221,18 @@ def test_json_valido_corto_no_se_reintenta(nucleo, monkeypatch):
 
 def test_nueve_tareas_corren_todas_a_la_vez(nucleo):
     assert nucleo.MAX_AGENTS >= 9          # con 8, la novena esperaba turno
+
+
+def test_razonamiento_desbocado_se_acota_en_el_reintento(nucleo, monkeypatch):
+    cuerpos = []
+
+    async def crear(**kw):
+        cuerpos.append(kw["extra_body"])
+        if len(cuerpos) == 1:
+            return respuesta("", proveedor="Parasail", fin="length", razon=24000)
+        return respuesta('{"bugs": []}')
+
+    monkeypatch.setattr(nucleo.openrouter.chat.completions, "create", crear)
+    assert asyncio.run(nucleo.llm("revisa", thinking="none")) == '{"bugs": []}'
+    assert cuerpos[0]["reasoning"] == {"effort": "low"}
+    assert cuerpos[1]["reasoning"] == {"max_tokens": 8000}      # acotado, no solo más techo

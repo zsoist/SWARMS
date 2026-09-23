@@ -352,6 +352,12 @@ async def llm(
             print(f"  ⚠️  {model} devolvió vacío (fin={r.choices[0].finish_reason}, "
                   f"razonó {VACIOS[-1]['razonamiento']} tokens vía {VACIOS[-1]['provider']}); reintento con más techo")
             techo = int(techo * 1.5)
+            # Razonamiento desbocado (fin=length: razonó hasta el techo sin contestar,
+            # visto con effort low en Parasail a 24.000 tokens): subir el techo solo le
+            # da más cuerda. El reintento ACOTA el razonamiento; lo sobrante es respuesta.
+            if r.choices[0].finish_reason == "length":
+                cuerpo = {k: v for k, v in cuerpo.items() if k != "reasoning"}
+                cuerpo["reasoning"] = {"max_tokens": int(os.environ.get("GLM_RAZON_REINTENTO", "8000"))}
             # y que el reintento no caiga en el mismo proveedor que se quedó pensando
             if VACIOS[-1]["provider"]:
                 prov["ignore"] = sorted(set(prov.get("ignore", [])) | {VACIOS[-1]["provider"]})
