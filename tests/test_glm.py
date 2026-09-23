@@ -20,7 +20,7 @@ RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 def nucleo(tmp_path, monkeypatch):
     monkeypatch.setenv("ENJAMBRE_DIR", str(tmp_path))
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-prueba")
-    for v in ("SUPABASE_URL", "ENJAMBRE", "WORKER_MODEL", "BRAIN_MODEL", "ENJAMBRE_OPENROUTER_KEY", "ENSAMBLAR"):
+    for v in ("SUPABASE_URL", "ENJAMBRE", "WORKER_MODEL", "BRAIN_MODEL", "ENJAMBRE_OPENROUTER_KEY", "ENSAMBLAR", "ENJAMBRE_PARALELO", "MAX_DEEPSEEK_AGENTS"):
         monkeypatch.delenv(v, raising=False)
     sys.modules.pop("enjambre.nucleo", None)
     import enjambre.nucleo as n
@@ -70,7 +70,7 @@ def test_vacio_se_reintenta_con_el_mismo_modelo_y_otro_proveedor(nucleo, monkeyp
 def test_reintento_del_worker_no_se_va_a_deepseek(nucleo, monkeypatch):
     modelos = []
 
-    async def llm(prompt, model=None, system=None, thinking="none"):
+    async def llm(prompt, model=None, system=None, thinking="none", formato=None):
         modelos.append(model or nucleo.WORKER_MODEL)
         return "" if len(modelos) == 1 else "x" * 200      # el primero falla el gate
 
@@ -152,3 +152,72 @@ def test_sin_rezago_no_hay_segunda_peticion(nucleo, monkeypatch):
     monkeypatch.setattr(nucleo.openrouter.chat.completions, "create", crear)
     assert asyncio.run(nucleo.llm("revisa", thinking="none")) == "rápido y bien"
     assert len(llamadas) == 1 and nucleo.LLAMADAS[-1]["cubierta"] is False
+
+
+def test_compuerta_verifica_por_extension(nucleo):
+    c = nucleo.compuerta
+    assert c("a.json", '{"bugs": []}') is None
+    assert c("a.json", '```json\n{"bugs": []}\n```') is None          # la cerca no cuenta como error
+    assert "JSONDecodeError" in c("a.json", '{"bugs": [')
+    assert c("a.py", "def f():\n    return 1\n") is None
+    assert "SyntaxError" in c("a.py", "def f(:\n")
+    assert c("a.md", "cualquier prosa") is None                       # la prosa es del juez
+
+
+def test_json_roto_se_reintenta_con_el_error_y_con_el_contexto(nucleo, monkeypatch):
+    pedidos = []
+
+    async def llm(prompt, model=None, system=None, thinking="none", formato=None):
+        pedidos.append({"prompt": prompt, "formato": formato})
+        if "da el contexto" in prompt and "devuelve el json" not in prompt:
+            return "Contexto de la dependencia, en prosa, suficientemente largo para pasar el gate heurístico sin problema alguno."
+        if len([p for p in pedidos if "devuelve el json" in p["prompt"]]) == 1:
+            return '{"bugs": [' + '"x", ' * 30                          # largo pero roto
+        return json.dumps({"bugs": ["ok"]})                             # corto y válido: no debe reintentarse
+
+    monkeypatch.setattr(nucleo, "llm", llm)
+    s = nucleo.Swarm("compuerta de json roto con reintento y contexto")
+    s.cached_plan = [{"id": "base", "prompt": "da el contexto", "deps": [], "filename": "base.md"},
+                     {"id": "t1", "prompt": "devuelve el json", "deps": ["base"], "filename": "t1.json"}]
+    s.ensamblar = False
+    # la dependencia contesta prosa larga (pasa el gate) sin llamar al juez
+    monkeypatch.setattr(nucleo, "jev_review", lambda *a, **k: asyncio.sleep(0, result={"sin_juez": True, "motivo": "prueba"}))
+    asyncio.run(s.run())
+    j = [p for p in pedidos if "devuelve el json" in p["prompt"]]
+    assert len(j) == 2
+    assert all(p["formato"] == "json" for p in j)                    # modo JSON pedido
+    assert "no pasa la verificación automática" in j[1]["prompt"]
+    assert "[insumo de base]" in j[1]["prompt"]                       # el reintento no pierde el contexto
+    assert json.loads((s.ship_dir / "t1.json").read_text()) == {"bugs": ["ok"]}
+
+
+def test_modo_json_llega_a_openrouter(nucleo, monkeypatch):
+    vistos = []
+
+    async def crear(**kw):
+        vistos.append(kw["extra_body"].get("response_format"))
+        return respuesta('{"ok": true}')
+
+    monkeypatch.setattr(nucleo.openrouter.chat.completions, "create", crear)
+    asyncio.run(nucleo.llm("x", formato="json"))
+    asyncio.run(nucleo.llm("x"))
+    assert vistos == [{"type": "json_object"}, None]
+
+
+def test_json_valido_corto_no_se_reintenta(nucleo, monkeypatch):
+    llamadas = []
+
+    async def llm(prompt, model=None, system=None, thinking="none", formato=None):
+        llamadas.append(prompt)
+        return '{"bugs": []}'                    # "no encontré nada": 12 caracteres, válido
+
+    monkeypatch.setattr(nucleo, "llm", llm)
+    s = nucleo.Swarm("respuesta vacía legítima en json corto")
+    s.cached_plan = [{"id": "t1", "prompt": "busca bugs", "deps": [], "filename": "t1.json"}]
+    s.ensamblar = False
+    asyncio.run(s.run())
+    assert len(llamadas) == 1
+
+
+def test_nueve_tareas_corren_todas_a_la_vez(nucleo):
+    assert nucleo.MAX_AGENTS >= 9          # con 8, la novena esperaba turno

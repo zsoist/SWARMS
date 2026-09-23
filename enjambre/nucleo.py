@@ -27,7 +27,10 @@ import datetime as _dt
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -40,7 +43,9 @@ from openai import AsyncOpenAI
 ROOT = Path(os.environ.get("ENJAMBRE_DIR", Path.cwd()))
 load_dotenv(ROOT / ".env")
 
-MAX_AGENTS = int(os.environ.get("MAX_DEEPSEEK_AGENTS", "8"))
+# agentes en paralelo. 12: con 8, un plan de 9 tareas dejaba una esperando turno.
+# MAX_DEEPSEEK_AGENTS es el nombre viejo (de cuando la tropa era DeepSeek).
+MAX_AGENTS = int(os.environ.get("ENJAMBRE_PARALELO") or os.environ.get("MAX_DEEPSEEK_AGENTS") or "12")
 FABLE_ENABLED = os.environ.get("FABLE_ENABLED", "0") == "1"
 FABLE_MODEL = os.environ.get("FABLE_MODEL", "claude-fable-5-1")
 
@@ -262,6 +267,7 @@ async def llm(
     model: str = WORKER_MODEL,
     system: str | None = None,
     thinking: str = "none",
+    formato: str | None = None,
 ) -> str:
     """Una llamada worker. DeepSeek nativo primero (salvo slugs de OpenRouter:
     cualquier modelo con '/' va DIRECTO a OpenRouter), OpenRouter fallback.
@@ -319,6 +325,10 @@ async def llm(
         if af.get("ignore"):
             prov["ignore"] = af["ignore"]
         cuerpo = {"usage": {"include": True}, "provider": prov, **extra_or}
+        if formato == "json":
+            # modo JSON: el proveedor garantiza que parsea (medido: Parasail, Friendli y
+            # BaseTen lo soportan con GLM; require_parameters deja fuera a quien no)
+            cuerpo["response_format"] = {"type": "json_object"}
         if af.get("top_p"):
             cuerpo["top_p"] = af["top_p"]
         techo = af.get("max_tokens", 4096)
@@ -466,6 +476,39 @@ WORKER_CONSTITUTION = (
 )
 
 GATE_BAD = ("i cannot", "i can't", "no puedo", "lo siento, no", "as an ai")
+
+
+def compuerta(filename: str | None, texto: str) -> str | None:
+    """Verificación determinista del entregable: que parsee o compile según su
+    extensión. Devuelve el error (para dárselo al modelo) o None si pasa.
+
+    El juez no mira estos archivos ("lo deciden las compuertas"), pero hasta el
+    2026-09-23 ninguna compuerta corría: 2 de 9 JSON rotos se shippearon."""
+    ext = Path(filename or "").suffix.lower()
+    t = sin_cerca(texto or "", ext)
+    try:
+        if ext == ".json":
+            json.loads(t)
+        elif ext == ".py":
+            compile(t, filename or "entregable.py", "exec")
+        elif ext in (".yaml", ".yml"):
+            import yaml
+            yaml.safe_load(t)
+        elif ext in (".js", ".mjs") and shutil.which("node"):
+            # con import/export se revisa como módulo: si no, un .js de navegador
+            # válido fallaría como CommonJS
+            modulo = ext == ".mjs" or re.search(r"^\s*(import|export)\b", t, re.M)
+            with tempfile.NamedTemporaryFile("w", suffix=".mjs" if modulo else ".js", delete=False) as f:
+                f.write(t)
+            try:
+                r = subprocess.run(["node", "--check", f.name], capture_output=True, text=True, timeout=30)
+            finally:
+                os.unlink(f.name)
+            if r.returncode != 0:
+                return "SyntaxError: " + (r.stderr.strip().splitlines() or ["?"])[-1][:300]
+    except Exception as e:
+        return f"{type(e).__name__}: {str(e)[:300]}"
+    return None
 
 
 def gate(output: str) -> bool:
@@ -834,20 +877,27 @@ class Swarm:
             think = "none"
         model = WORKER_MODEL   # antes "deepseek-flash" fijo: con ENJAMBRE=glm los reintentos se iban a DeepSeek
         warn = False
+        fmt = "json" if (t.get("filename") or "").lower().endswith(".json") else None
+        verificable = Path(t.get("filename") or "").suffix.lower() in (".json", ".py", ".js", ".mjs", ".yaml", ".yml")
+
+        async def pedir(texto, **kw):
+            return await llm(texto, system=WORKER_CONSTITUTION, formato=fmt, **kw)
         async with self.sem:
-            out = await llm(prompt, system=WORKER_CONSTITUTION, thinking=think)
+            out = await pedir(prompt, thinking=think)
             # Escalera de reintentos ENRUTADA POR JEV (máx 2 fixes, luego se
             # shippea con warn — ship-first, nunca bloquear la misión).
             for attempt in range(2):
                 # Gate heurístico ANTES de Jev: vacío, rechazo o <80 chars ya
                 # está condenado — no le pagamos una inspección Jev (~12k chars)
                 # a lo que solo puede acabar en fix.
-                if attempt == 0 and not gate(out):
+                # el largo mínimo es para prosa: un JSON válido corto ({"bugs": []},
+                # "no encontré nada") es una respuesta legítima y se reintentaba
+                corto_valido = verificable and out.strip() and not compuerta(t.get("filename"), out)
+                if attempt == 0 and not gate(out) and not corto_valido:
                     self.log({"event": "jev_skip", "id": t["id"], "chars": len(out)})
-                    out = await llm(f"Este output falló ({out[:300]!r}). Entrega el "
-                                    f"resultado completo para: {t['prompt']}",
-                                    model=model, system=WORKER_CONSTITUTION,
-                                    thinking=think)
+                    out = await pedir(f"Este output falló ({out[:300]!r}). Entrega el "
+                                    f"resultado completo para: {prompt}",
+                                    model=model, thinking=think)
                     continue
                 jv = await jev_review(t["prompt"], out, t.get("filename", ""))
                 if jv and jv.get("sin_juez"):
@@ -856,9 +906,9 @@ class Swarm:
                     break
                 if jv is None:  # Jev caído → gate heurístico local, sin reintentos ciegos
                     if not gate(out) and attempt == 0:
-                        out = await llm(f"Este output falló ({out[:300]!r}). Entrega el "
-                                        f"resultado completo para: {t['prompt']}",
-                                        system=WORKER_CONSTITUTION, thinking=think)
+                        out = await pedir(f"Este output falló ({out[:300]!r}). Entrega el "
+                                        f"resultado completo para: {prompt}",
+                                        thinking=think)
                     break
                 self.log({"event": "jev", "id": t["id"], "p": jv["p"],
                           "quality": jv["quality"], "action": jv["action"],
@@ -884,15 +934,32 @@ class Swarm:
                           if jv["fallas"] else
                           " Relee las restricciones LITERALES de la tarea "
                           "(longitud exacta, formato, cantidad) y cúmplelas.")
-                out = await llm(
+                out = await pedir(
                     f"Un inspector calificó tu output {jv['quality']:.1f}/4 y lo "
                     f"rechazó.{fallas}\nOutput rechazado:\n{out[:1500]}\n\n"
-                    f"Entrega la versión corregida y completa de: {t['prompt']}",
-                    model=model, system=WORKER_CONSTITUTION, thinking=think)
+                    f"Entrega la versión corregida y completa de: {prompt}",
+                    model=model, thinking=think)
             else:
                 warn = True
                 self.log({"event": "warn", "id": t["id"],
                           "msg": "shippeado sin aprobación de Jev tras 2 fixes"})
+            # Compuerta determinista: lo verificable por máquina se verifica, y el
+            # error exacto viaja al reintento (dos intentos; si sigue roto, warn).
+            for intento_c in range(2):
+                err = compuerta(t.get("filename"), out)
+                if not err:
+                    break
+                self.log({"event": "compuerta", "id": t["id"], "error": err, "intento": intento_c + 1})
+                print(f"  🧱 {t['id']}: {err[:90]} → reintento con el error")
+                out = await pedir(f"Tu entregable no pasa la verificación automática: {err}\n"
+                                  f"Entrega SOLO el archivo corregido y completo para: {prompt}",
+                                  model=model, thinking=think)
+            else:
+                err = compuerta(t.get("filename"), out)
+                if err:
+                    warn = True
+                    self.log({"event": "warn", "id": t["id"], "msg": f"no pasa la compuerta: {err}"})
+                    print(f"  ⚠️  {t['id']}: sigue sin pasar la compuerta ({err[:80]})")
         self.results[t["id"]] = out
         self.ship(t["id"], t.get("filename"), out)
         self.log({"event": "shipped", "id": t["id"], "chars": len(out), "warn": warn})

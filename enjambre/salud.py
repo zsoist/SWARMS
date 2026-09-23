@@ -43,7 +43,7 @@ def _leer_config():
         break
     cfg["tropa"] = os.environ.get("WORKER_MODEL", cfg["tropa"])
     cfg["cerebro"] = os.environ.get("BRAIN_MODEL", cfg["cerebro"])
-    cfg["paralelo"] = int(os.environ.get("MAX_DEEPSEEK_AGENTS", "8"))
+    cfg["paralelo"] = int(os.environ.get("ENJAMBRE_PARALELO") or os.environ.get("MAX_DEEPSEEK_AGENTS") or "12")
     return cfg
 
 

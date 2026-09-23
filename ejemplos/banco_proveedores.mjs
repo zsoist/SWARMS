@@ -5,6 +5,7 @@
 //
 //   OPENROUTER_API_KEY=... node ejemplos/banco_proveedores.mjs z-ai/glm-5.3-flash prompt.txt CoreWeave Parasail Friendli
 //   EFFORT=medium MAX_TOKENS=32000 node ejemplos/banco_proveedores.mjs z-ai/glm-5.3 plan.txt Baidu "Io Net" Novita
+//   JSON=1 node ejemplos/banco_proveedores.mjs ...        # ¿el proveedor soporta response_format json_object?
 //
 // Qué mirar: "fin" debe ser stop (length = el razonamiento se comió el techo);
 // "content" > 0; y que la respuesta tenga sustancia (un proveedor contestó en 3 s
@@ -24,6 +25,7 @@ async function uno(prov) {
     model: modelo, messages: [{ role: "user", content: prompt }],
     max_tokens: +(process.env.MAX_TOKENS || 24000), temperature: 1.0, top_p: 0.95,
     reasoning: { effort: process.env.EFFORT || "low" }, usage: { include: true },
+    ...(process.env.JSON === "1" ? { response_format: { type: "json_object" } } : {}),
     provider: { order: [prov], allow_fallbacks: false, require_parameters: true, data_collection: "deny",
                 max_price: { prompt: +(process.env.OR_MAX_PROMPT || 1), completion: +(process.env.OR_MAX_COMPLETION || 3) } },
   };
@@ -34,8 +36,9 @@ async function uno(prov) {
     })).json();
     if (r.error) return console.log(prov.padEnd(15), "ERROR", r.error.code, String(r.error.message).slice(0, 80));
     const c = r.choices[0], t = c.message.content || "";
+    let json = "-"; if (process.env.JSON === "1") { try { JSON.parse(t); json = "ok"; } catch { json = "ROTO"; } }
     console.log(prov.padEnd(15), "s", String(Math.round((Date.now() - t0) / 1000)).padStart(4), "fin", c.finish_reason,
-      "content", t.length, "razon", r.usage?.completion_tokens_details?.reasoning_tokens, "$", (+r.usage?.cost || 0).toFixed(4));
+      "content", t.length, "json", json, "razon", r.usage?.completion_tokens_details?.reasoning_tokens, "$", (+r.usage?.cost || 0).toFixed(4));
   } catch (e) {
     console.log(prov.padEnd(15), "EXC", e.name, Math.round((Date.now() - t0) / 1000), "s");
   }
