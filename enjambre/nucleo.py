@@ -161,7 +161,9 @@ AFINADO = {
         "temp_razonando": 1.0,
         "sort": "throughput",    # con salidas largas manda tokens/s, no el primer token
         "order": os.environ.get("GLM_PROVIDERS", "CoreWeave,BaseTen").split(","),
-        "ignore": ["Together"],
+        # Together: 3 s y cero razonamiento (respuesta perezosa). Wafer: razonó hasta
+        # el techo de 24k sin contestar, 5 de 9 workers en paralelo (2026-09-23).
+        "ignore": ["Together", "Wafer"],
     },
 }
 
@@ -267,6 +269,9 @@ async def llm(
             print(f"  ⚠️  {model} devolvió vacío (fin={r.choices[0].finish_reason}, "
                   f"razonó {VACIOS[-1]['razonamiento']} tokens vía {VACIOS[-1]['provider']}); reintento con más techo")
             techo = int(techo * 1.5)
+            # y que el reintento no caiga en el mismo proveedor que se quedó pensando
+            if VACIOS[-1]["provider"]:
+                prov["ignore"] = sorted(set(prov.get("ignore", [])) | {VACIOS[-1]["provider"]})
     else:
         try:
             r = await deepseek.chat.completions.create(
