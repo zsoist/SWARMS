@@ -208,6 +208,53 @@ def afinado_de(model: str) -> dict:
 
 
 VACIOS: list = []   # respuestas vacías de la corrida: modelo, proveedor, por qué
+LLAMADAS: list = []  # cada llamada a OpenRouter: modelo, proveedor, segundos, si hubo cobertura
+# Cobertura (hedged request): lo normal para GLM es terminar en <100 s; si una
+# llamada pasa de HEDGE_S sale una segunda arrancando por otro proveedor y gana la
+# primera que llegue. El 2026-09-23, 8 de 9 workers en ≤91 s y uno en 336 s: la
+# corrida entera esperaba al rezagado.
+HEDGE_S = float(os.environ.get("GLM_HEDGE_S", "150"))
+
+
+async def _pedir(model, messages, techo, temperatura, cuerpo, af):
+    """Una petición a OpenRouter, con cobertura si el modelo tiene ruta medida."""
+    def crear(c):
+        return openrouter.chat.completions.create(
+            model=model, messages=messages, timeout=900, max_tokens=techo,
+            temperature=temperatura, extra_body=c)
+    t0 = time.monotonic()
+    orden = (cuerpo.get("provider") or {}).get("order") or []
+    primera = asyncio.ensure_future(crear(cuerpo))
+    cubierta = False
+    if not af.get("order") or len(orden) < 2:
+        r = await primera
+    else:
+        hechas, _ = await asyncio.wait({primera}, timeout=HEDGE_S)
+        if hechas:
+            r = primera.result()
+        else:
+            cubierta = True
+            print(f"  ⏱  {model}: {HEDGE_S:.0f} s sin respuesta → segunda petición por {orden[1]}")
+            c2 = {**cuerpo, "provider": {**cuerpo["provider"], "order": orden[1:] + orden[:1]}}
+            pendientes, r, error = {primera, asyncio.ensure_future(crear(c2))}, None, None
+            while pendientes and r is None:
+                hechas, pendientes = await asyncio.wait(pendientes, return_when=asyncio.FIRST_COMPLETED)
+                for h in hechas:
+                    if h.exception() is not None:
+                        error = h.exception()
+                    elif r is None:
+                        r = h.result()
+            for x in pendientes:
+                x.cancel()
+            if r is None:
+                raise error
+    det = getattr(r.usage, "completion_tokens_details", None) if r.usage else None
+    LLAMADAS.append({"model": model, "provider": getattr(r, "provider", None),
+                     "s": round(time.monotonic() - t0, 1), "cubierta": cubierta,
+                     "fin": r.choices[0].finish_reason,
+                     "razonamiento": getattr(det, "reasoning_tokens", None) if det else None,
+                     "chars": len(r.choices[0].message.content or "")})
+    return r
 
 
 async def llm(
@@ -276,15 +323,11 @@ async def llm(
             cuerpo["top_p"] = af["top_p"]
         techo = af.get("max_tokens", 4096)
         for intento in range(2):
-            r = await openrouter.chat.completions.create(
-                model=model, messages=messages, timeout=900,
-                # sin techo explícito, una respuesta larga puede cortarse justo
-                # donde el razonamiento se comió el presupuesto
-                max_tokens=techo,
-                temperature=(af.get("temp_directo" if thinking == "none"
-                                    else "temp_razonando", temperature)),
-                extra_body=cuerpo,
-            )
+            # sin techo explícito, una respuesta larga puede cortarse justo
+            # donde el razonamiento se comió el presupuesto
+            r = await _pedir(model, messages, techo,
+                             af.get("temp_directo" if thinking == "none" else "temp_razonando", temperature),
+                             cuerpo, af)
             budget.add("openrouter", model, r.usage)
             if (r.choices[0].message.content or "").strip():
                 break
@@ -941,7 +984,13 @@ class Swarm:
         print(f"   flota: {WORKER_MODEL}"
               + (f" · ⚠️ {len(VACIOS)} respuestas vacías reintentadas "
                  f"({', '.join(sorted({str(v['provider']) for v in VACIOS}))})" if VACIOS else " · 0 respuestas vacías"))
-        self.log({"event": "flota", "worker": WORKER_MODEL, "vacios": VACIOS})
+        if LLAMADAS:
+            ts = sorted(x["s"] for x in LLAMADAS)
+            lenta = max(LLAMADAS, key=lambda x: x["s"])
+            cub = sum(x["cubierta"] for x in LLAMADAS)
+            print(f"   llamadas: {len(LLAMADAS)} · mediana {ts[len(ts) // 2]:.0f} s · la más lenta "
+                  f"{lenta['s']:.0f} s vía {lenta['provider']}" + (f" · {cub} con cobertura" if cub else ""))
+        self.log({"event": "flota", "worker": WORKER_MODEL, "vacios": VACIOS, "llamadas": LLAMADAS})
         for tid in self.results:
             j = jevs.get(tid)
             fn = tasks and next((t.get("filename") for t in tasks if t["id"] == tid), None)

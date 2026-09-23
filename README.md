@@ -54,6 +54,7 @@ Desde un agente: pídele que corra el comando y que lea `FINAL.md`. Con
 | `ENSAMBLAR` | `1` | `0` = no ensamblar (igual que `"ensamblar": false` en el plan) |
 | `GLM_PROVIDERS` / `GLM_BRAIN_PROVIDERS` | medidos | orden de proveedores de la tropa y del cerebro |
 | `GLM_MAX_TOKENS` / `GLM_BRAIN_MAX_TOKENS` | `24000` / `32000` | razonamiento + respuesta |
+| `GLM_HEDGE_S` | `150` | segundos antes de lanzar la petición de cobertura |
 
 Con la flota `glm` basta `OPENROUTER_API_KEY`. `DEEPSEEK_API_KEY` solo para `deepseek`.
 
@@ -68,6 +69,7 @@ Con la flota `glm` basta `OPENROUTER_API_KEY`. `DEEPSEEK_API_KEY` solo para `dee
 | GLM tropa: CoreWeave, Parasail, Friendli, BaseTen; `sort: throughput` | CoreWeave 16–124 s, Parasail 40–81 s, Friendli 49–161 s; DeepInfra/Morph 677 s; Together contesta en 3 s sin razonar (lista vacía); Wafer razona hasta el techo sin contestar |
 | GLM cerebro con ruta propia: Baidu, Io Net, Novita, Inceptron, InferenceNet | CoreWeave no sirve `glm-5.3` y los de la tropa cobran $4,40/M (fuera del techo de precio). Planes válidos en 24–28 s; Phala 154 s y error |
 | Vacío = reintento con el mismo modelo y otro proveedor | antes el reintento iba fijo a `deepseek-flash`: pedías GLM y contestaba DeepSeek |
+| Cobertura (`GLM_HEDGE_S`, 150 s) y línea `llamadas:` | un worker en 336 s frenaba a 8 que terminaron en ≤91 s. Con cobertura y ruta medida: 9 workers en 138 s, 0 vacías, $0,057. El tiempo sigue al razonamiento (~110 tokens/s): 1.639 tokens → 22 s, 15.642 → 138 s |
 | Juez solo en prosa | acierta 8/8 en prosa, 2/5 en código, 1/10 en lotes de parches, 0/7 verificando datos. Decide la extensión del archivo |
 | Cercas de código fuera | los modelos envuelven el archivo en ```` ``` ```` aunque se les prohíba; sin quitarla, un `.js` no carga |
 | Nombres repetidos | dos tareas con el mismo archivo se pisaban; ahora la segunda lleva el id delante |

@@ -25,6 +25,7 @@ def nucleo(tmp_path, monkeypatch):
     sys.modules.pop("enjambre.nucleo", None)
     import enjambre.nucleo as n
     n.VACIOS.clear()
+    n.LLAMADAS.clear()
     return n
 
 
@@ -118,3 +119,36 @@ def test_llave_propia_del_enjambre_gana(tmp_path):
     env.update({"ENJAMBRE_DIR": str(tmp_path), "OPENROUTER_API_KEY": "sk-or-v1-sitio", "ENJAMBRE_OPENROUTER_KEY": "sk-or-v1-enjambre"})
     r = subprocess.run([sys.executable, "-c", code], cwd=RAIZ, env=env, capture_output=True, text=True, timeout=60)
     assert r.stdout.strip() == "sk-or-v1-enjambre", r.stderr
+
+
+def test_cobertura_gana_la_segunda_si_la_primera_se_rezaga(nucleo, monkeypatch):
+    monkeypatch.setattr(nucleo, "HEDGE_S", 0.2)
+    llamadas = []
+
+    async def crear(**kw):
+        llamadas.append(kw["extra_body"]["provider"]["order"][0])
+        if len(llamadas) == 1:
+            await asyncio.sleep(5)                 # el rezagado
+            return respuesta("tarde")
+        return respuesta('{"bugs": ["a tiempo"]}', proveedor=kw["extra_body"]["provider"]["order"][0])
+
+    monkeypatch.setattr(nucleo.openrouter.chat.completions, "create", crear)
+    import time as _t
+    t0 = _t.monotonic()
+    out = asyncio.run(nucleo.llm("revisa", thinking="none"))
+    assert out == '{"bugs": ["a tiempo"]}'
+    assert _t.monotonic() - t0 < 2                                   # no esperó al rezagado
+    assert llamadas[0] != llamadas[1]                                # la segunda arrancó por otro proveedor
+    assert nucleo.LLAMADAS[-1]["cubierta"] is True
+
+
+def test_sin_rezago_no_hay_segunda_peticion(nucleo, monkeypatch):
+    llamadas = []
+
+    async def crear(**kw):
+        llamadas.append(1)
+        return respuesta("rápido y bien")
+
+    monkeypatch.setattr(nucleo.openrouter.chat.completions, "create", crear)
+    assert asyncio.run(nucleo.llm("revisa", thinking="none")) == "rápido y bien"
+    assert len(llamadas) == 1 and nucleo.LLAMADAS[-1]["cubierta"] is False
