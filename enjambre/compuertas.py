@@ -60,7 +60,7 @@ def jev_gate_parche(hallazgo: dict, buscar: str, reemplazar: str,
         res.update(aprobar=True, riesgo=0, motivo="compuerta desactivada (JEV_GATE=0)")
         return res
 
-    key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+    key = (os.environ.get("ENJAMBRE_OPENROUTER_KEY") or os.environ.get("OPENROUTER_API_KEY", "")).strip()
     if not key:
         res["motivo"] = "sin OPENROUTER_API_KEY — fail-closed"
         return res

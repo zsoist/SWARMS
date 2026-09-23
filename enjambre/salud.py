@@ -62,9 +62,11 @@ _DIR_RAIZ = os.environ.get("ENJAMBRE_DIR", os.getcwd())
 _DIR_RUNS = os.path.join(_DIR_RAIZ, 'runs')
 
 # nombre: (variable de entorno con la llave, URL de probe GET gratis, headers)
+# la llave propia del enjambre gana, igual que en el núcleo
+_OR_VAR = 'ENJAMBRE_OPENROUTER_KEY' if os.environ.get('ENJAMBRE_OPENROUTER_KEY') else 'OPENROUTER_API_KEY'
 _PROVEEDORES = {
     'openrouter': (
-        'OPENROUTER_API_KEY',
+        _OR_VAR,
         'https://openrouter.ai/api/v1/models',
         None,
     ),

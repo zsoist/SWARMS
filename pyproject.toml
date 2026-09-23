@@ -1,6 +1,6 @@
 [project]
 name = "enjambre"
-version = "0.1.0"
+version = "0.2.0"
 description = "Un modelo bueno piensa y reparte; muchos baratos ejecutan en paralelo; un juez de centavos revisa."
 requires-python = ">=3.11"
 dependencies = ["openai>=1.40", "httpx>=0.27", "python-dotenv>=1.0", "pyyaml>=6.0"]

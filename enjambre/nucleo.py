@@ -6,19 +6,20 @@ cada tarea se despacha apenas sus dependencias resuelven, cada output se
 shippea a disco al instante, y solo lo que falla el gate pasa (una vez)
 por un fixer. Sin re-verificación global.
 
-Roles:
-  PLANNER    deepseek-v4-pro (o Fable si FABLE_ENABLED=1) — descompone en DAG
+Roles (flota por defecto ENJAMBRE=glm; con ENJAMBRE=deepseek, los equivalentes):
+  PLANNER    z-ai/glm-5.3 (o Fable si FABLE_ENABLED=1) — descompone en DAG
              y asigna thinking por tarea (none/low/medium/high)
   WORKER     la tropa de la flota (ENJAMBRE=glm: z-ai/glm-5.3-flash; deepseek:
              deepseek-flash) x8 — thinking por tarea, ejecuta y shippea
   GATE       Jev (typesafe/jev-1.13, OpenRouter /decisions) — juez tipado
              calibrado ~$0.00002/llamada; fallback heurístico sin LLM
   FIXER      el mismo modelo worker — un intento de arreglo solo si el gate falla
-  ASSEMBLER  deepseek-v4-pro (o Fable) — ensambla el entregable final
+  ASSEMBLER  el mismo cerebro — ensambla FINAL.md (se apaga con "ensamblar": false)
 
 Uso:
-    uv run --project orchestrator python orchestrator/swarm.py "tu reto"
-    uv run --project orchestrator python orchestrator/swarm.py --demo
+    uvx --from git+https://github.com/zsoist/SWARMS enjambre "tu reto"
+    uvx --from git+https://github.com/zsoist/SWARMS enjambre --plan plan.json
+    enjambre --help
 """
 
 import asyncio
@@ -51,8 +52,12 @@ deepseek = AsyncOpenAI(
     api_key=os.environ.get("DEEPSEEK_API_KEY") or "falta-DEEPSEEK_API_KEY",
     base_url=os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
 )
+# ENJAMBRE_OPENROUTER_KEY, si existe, gana: así el enjambre gasta de su propia
+# llave y no le come el tope diario a otra app que use OPENROUTER_API_KEY
+# (el 2026-09-23 un día de enjambre cerró un sitio público que la compartía).
+OR_KEY = os.environ.get("ENJAMBRE_OPENROUTER_KEY") or os.environ.get("OPENROUTER_API_KEY")
 openrouter = AsyncOpenAI(
-    api_key=os.environ.get("OPENROUTER_API_KEY") or "falta-OPENROUTER_API_KEY",
+    api_key=OR_KEY or "falta-OPENROUTER_API_KEY",
     base_url=os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
 )
 
@@ -69,7 +74,8 @@ class Budget:
     """Techos de gasto de hoy (fijados por Daniel). Precios aproximados USD/1M tokens
     (referencia: catálogo OpenRouter 2026-09-21, v4.1-flash / v4-pro)."""
 
-    PRICES = {"deepseek-flash": (0.15, 0.60), "deepseek-v4-pro": (0.57, 1.70)}
+    PRICES = {"deepseek-flash": (0.15, 0.60), "deepseek-v4-pro": (0.57, 1.70),
+              "z-ai/glm-5.3-flash": (0.15, 0.50), "z-ai/glm-5.3": (0.56, 1.76)}
     CEILING = {
         "deepseek": float(os.environ.get("DEEPSEEK_BUDGET_USD", "10")),
         "openrouter": float(os.environ.get("OPENROUTER_BUDGET_USD", "10")),
@@ -154,7 +160,8 @@ PROVEEDORES_OR = os.environ.get(
 #   3 s con {"bugs":[]} y CERO razonamiento: rápido pero perezoso, fuera.
 # - reasoning.max_tokens=2048 recorta, pero la respuesta sale peor (JSON roto).
 AFINADO = {
-    "glm": {
+    # ── tropa: z-ai/glm-5.3-flash ──
+    "glm-5.3-flash": {
         "max_tokens": int(os.environ.get("GLM_MAX_TOKENS", "24000")),  # razonamiento + respuesta
         "top_p": 0.95,
         "temp_directo": 1.0,     # Z.ai: no ajustar temperature y top_p a la vez
@@ -170,15 +177,33 @@ AFINADO = {
         # Z.AI: JSON roto o >420 s.
         "ignore": ["Together", "Wafer", "Morph", "OpenInference", "Z.AI"],
     },
+    # ── cerebro: z-ai/glm-5.3 (planificador y ensamblador) ──
+    # Heredaba la ruta de la tropa, pero CoreWeave no sirve el modelo grande y
+    # Parasail/Friendli/BaseTen cobran $1,40/$4,40 por millón: el techo de precio
+    # (OR_MAX_*) los sacaba a todos y el ensamblado caía donde fuera (194 s).
+    # Medido 2026-09-23, cada proveedor solo, prompt real del planificador,
+    # effort medium: Baidu 28 s, Io Net 28 s, Novita 24 s, Inceptron 25 s,
+    # InferenceNet 24 s (planes válidos de 8 a 16 tareas); Phala 154 s y error.
+    "glm-5.3": {
+        "max_tokens": int(os.environ.get("GLM_BRAIN_MAX_TOKENS", "32000")),
+        "top_p": 0.95,
+        "temp_directo": 1.0,
+        "temp_razonando": 1.0,
+        "sort": "throughput",
+        "order": os.environ.get("GLM_BRAIN_PROVIDERS", "Baidu,Io Net,Novita,Inceptron,InferenceNet").split(","),
+        "ignore": ["Phala", "Morph", "Wafer", "Together"],
+    },
 }
 
 
 def afinado_de(model: str) -> dict:
-    """Los parámetros propios del modelo, si los tiene medidos."""
+    """Los parámetros propios del modelo, si los tiene medidos. Gana la clave más
+    larga que calce: "glm-5.3" también calza en "glm-5.3-flash", y confundirlas
+    mandó el cerebro por la ruta de la tropa."""
     m = (model or "").lower()
-    for clave, cfg in AFINADO.items():
+    for clave in sorted(AFINADO, key=len, reverse=True):
         if clave in m:
-            return cfg
+            return AFINADO[clave]
     return {}
 
 
@@ -320,8 +345,8 @@ async def brain(prompt: str, rank: str = "general") -> str:
             # system cacheado: el prefijo se paga una vez por modelo
             system=[{
                 "type": "text",
-                "text": "Eres el cerebro de un enjambre de agentes deepseek-flash "
-                        "en el Build Day de Bogotá. Máxima densidad: cero relleno. "
+                "text": "Eres el cerebro de un enjambre de agentes baratos en paralelo. "
+                        "Máxima densidad: cero relleno. "
                         "Cuando se pida JSON, responde SOLO JSON.",
                 "cache_control": {"type": "ephemeral"},
             }],
@@ -566,7 +591,7 @@ async def jev_review(task_prompt: str, output: str, filename: str = ""):
         async with httpx.AsyncClient(timeout=30) as c:
             r = await c.post(
                 "https://openrouter.ai/api/alpha/decisions",
-                headers={"Authorization": f"Bearer {os.environ['OPENROUTER_API_KEY']}"},
+                headers={"Authorization": f"Bearer {OR_KEY}"},
                 json={
                     "model": JEV_MODEL,
                     "state": f"Tarea encargada:\n{task_prompt[:4000]}\n\n"
@@ -614,6 +639,8 @@ THINK_UP = {"none": "low", "low": "medium", "medium": "high", "high": "high"}
 
 
 class Swarm:
+    ensamblar = os.environ.get("ENSAMBLAR", "1") != "0"
+
     def __init__(self, task: str, resume_dir: Path | None = None):
         if len(task.split()) < 4 and not resume_dir:
             sys.exit(f"⛔ Reto demasiado vago ({task!r}) — no quemo tokens en eso.")
@@ -834,7 +861,7 @@ class Swarm:
             tasks = self.cached_plan
             print(f"♻️  Plan recuperado del checkpoint ({len(tasks)} tareas)")
         else:
-            print(f"🧠 Planner ({'Fable' if FABLE_ENABLED else 'deepseek-v4-pro'})…")
+            print(f"🧠 Planner ({'Fable' if FABLE_ENABLED else BRAIN_MODEL})…")
             plan = extract_json(await brain(PLAN_PROMPT.format(
                 n=MAX_AGENTS, max_tasks=MAX_AGENTS * 2, task=self.task
             )))
@@ -870,6 +897,15 @@ class Swarm:
             if self._beams:
                 await asyncio.gather(*self._beams, return_exceptions=True)
             return
+        if not self.ensamblar:
+            # Sin cerebro: FINAL.md es un índice de lo shippeado. Con un plan de
+            # artefactos (JSON, código) el ensamblado tardaba 3 min y nadie lo leía.
+            indice = "\n".join(f"- `{self.ship_dir / (t.get('filename') or t['id'] + '.md')}` — {t.get('titulo') or t['id']}"
+                               for t in tasks)
+            (self.run_dir / "FINAL.md").write_text(f"# {self.task}\n\nSin ensamblar (\"ensamblar\": false). Entregables:\n\n{indice}\n")
+            print("📋 Sin ensamblar: FINAL.md es el índice de los entregables")
+            await self._resumen(tasks)
+            return
         print("🧠 Assembler…")
         try:
             final = await brain(rank="officer", prompt=
@@ -884,6 +920,11 @@ class Swarm:
             # assembler caído no puede silenciar el 'done' ni perder telemetría.
             print(f"⚠️ assembler caído ({type(e).__name__}: {e}) — las piezas "
                   f"quedan en {self.ship_dir}, FINAL.md pendiente")
+        await self._resumen(tasks)
+
+
+    async def _resumen(self, tasks):
+        """Cierre de la corrida: 'done', la línea de flota y los entregables."""
         self.log({"event": "done", "seconds": round(time.monotonic() - self.t0, 1),
                   "spent": budget.spent, "tasks": len(self.results)})
         # Parte final: "listo, aquí está lo que pediste"
@@ -908,20 +949,19 @@ class Swarm:
                   + (f"  [sin juez: {j.get('motivo','')[:34]}]" if j and j.get("sin_juez")
                      else f"  [Jev {j['p']*100:.0f}%]" if j and j.get("p") is not None
                      else ""))
-        print(f"   • {self.run_dir}/FINAL.md  (entregable ensamblado)")
+        print(f"   • {self.run_dir}/FINAL.md  ({'entregable ensamblado' if self.ensamblar else 'índice, sin ensamblar'})")
         # drenar telemetría antes de que muera el loop (o el 'done' nunca llega)
         self._flush()
         if self._beams:
             await asyncio.gather(*self._beams, return_exceptions=True)
-
 
 def _exigir_llaves():
     """Falla temprano y en castellano, no con un 401 a mitad de corrida."""
     usa_or = "/" in WORKER_MODEL or "/" in BRAIN_MODEL
     usa_ds = not ("/" in WORKER_MODEL and "/" in BRAIN_MODEL)
     faltan = []
-    if usa_or and not os.environ.get("OPENROUTER_API_KEY"):
-        faltan.append("OPENROUTER_API_KEY")
+    if usa_or and not OR_KEY:
+        faltan.append("OPENROUTER_API_KEY (o ENJAMBRE_OPENROUTER_KEY)")
     if usa_ds and not os.environ.get("DEEPSEEK_API_KEY"):
         faltan.append("DEEPSEEK_API_KEY")
     if faltan:
@@ -929,10 +969,27 @@ def _exigir_llaves():
                  f"(flota «{ENJAMBRE}»: {WORKER_MODEL} + {BRAIN_MODEL})")
 
 
+AYUDA = f"""enjambre — un cerebro planifica, una tropa barata ejecuta en paralelo, un juez revisa.
+
+  enjambre "reto"                 el cerebro arma el plan (DAG) y la tropa lo ejecuta
+  enjambre --plan plan.json       tú (o tu agente) escribes el plan; la tropa ejecuta
+  enjambre --resume runs/<dir>    retoma una corrida cortada
+  enjambre --demo                 prueba de un minuto
+
+Plan: {{"task": "...", "ensamblar": false, "tasks": [{{"id", "prompt", "deps", "filename", "thinking"}}]}}
+  thinking "none" con GLM (effort low): con "medium" la tropa gastaba el techo pensando.
+  "ensamblar": false si los entregables son los artefactos (JSON, código): ahorra el ensamblado.
+
+Flota: {{ENJAMBRE}}={ENJAMBRE} · tropa {WORKER_MODEL} · cerebro {BRAIN_MODEL}
+Llave: ENJAMBRE_OPENROUTER_KEY (propia) o OPENROUTER_API_KEY, en .env de la carpeta.
+Al final mira la línea "flota:": dice qué modelo contestó y cuántas respuestas vinieron vacías."""
+
+
 def cli():
     """Punto de entrada del comando `enjambre`."""
-    if len(sys.argv) < 2:
-        sys.exit('Uso: enjambre "reto" | --demo | --resume runs/<dir> | --plan plan.json')
+    if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help", "ayuda"):
+        print(AYUDA)
+        sys.exit(0 if len(sys.argv) >= 2 else 2)
     _exigir_llaves()
     if sys.argv[1] == "--plan":
         # Plan autorado por Fable (Claude Code): los workers ejecutan tal cual.
@@ -941,6 +998,8 @@ def cli():
         spec = json.loads(Path(sys.argv[2]).read_text())
         s = Swarm(spec.get("task", "plan externo"))
         s.cached_plan = spec["tasks"]
+        if spec.get("ensamblar") is False:
+            s.ensamblar = False
         s.plan_needs_log = True
         asyncio.run(s.run())
         sys.exit(0)
