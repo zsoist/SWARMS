@@ -160,10 +160,15 @@ AFINADO = {
         "temp_directo": 1.0,     # Z.ai: no ajustar temperature y top_p a la vez
         "temp_razonando": 1.0,
         "sort": "throughput",    # con salidas largas manda tokens/s, no el primer token
-        "order": os.environ.get("GLM_PROVIDERS", "CoreWeave,BaseTen").split(","),
+        # medido proveedor por proveedor (allow_fallbacks:false, prompts de 32k y 54k):
+        # CoreWeave 16/124 s, Parasail 40/81 s, Friendli 49/161 s, JSON válido;
+        # BaseTen dio 429 en 4 de 4 ese día, queda de último.
+        "order": os.environ.get("GLM_PROVIDERS", "CoreWeave,Parasail,Friendli,BaseTen").split(","),
         # Together: 3 s y cero razonamiento (respuesta perezosa). Wafer: razonó hasta
         # el techo de 24k sin contestar, 5 de 9 workers en paralelo (2026-09-23).
-        "ignore": ["Together", "Wafer"],
+        # Morph: 12-26 min por tarea (ignora effort). OpenInference: 12 caracteres.
+        # Z.AI: JSON roto o >420 s.
+        "ignore": ["Together", "Wafer", "Morph", "OpenInference", "Z.AI"],
     },
 }
 
