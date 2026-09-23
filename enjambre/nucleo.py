@@ -9,10 +9,11 @@ por un fixer. Sin re-verificación global.
 Roles:
   PLANNER    deepseek-v4-pro (o Fable si FABLE_ENABLED=1) — descompone en DAG
              y asigna thinking por tarea (none/low/medium/high)
-  WORKER     deepseek-flash x8 — thinking optimizado por tarea, ejecuta y shippea
+  WORKER     la tropa de la flota (ENJAMBRE=glm: z-ai/glm-5.3-flash; deepseek:
+             deepseek-flash) x8 — thinking por tarea, ejecuta y shippea
   GATE       Jev (typesafe/jev-1.13, OpenRouter /decisions) — juez tipado
              calibrado ~$0.00002/llamada; fallback heurístico sin LLM
-  FIXER      deepseek-flash — un intento de arreglo solo si el gate falla
+  FIXER      el mismo modelo worker — un intento de arreglo solo si el gate falla
   ASSEMBLER  deepseek-v4-pro (o Fable) — ensambla el entregable final
 
 Uso:
@@ -143,13 +144,24 @@ PROVEEDORES_OR = os.environ.get(
 # toquen los dos a la vez. El max_tokens tiene que ser generoso: el modelo
 # razona obligatoriamente, y si el razonamiento se topa con el techo, devuelve
 # una cadena vacía y te la cobra igual.
+#
+# GLM, medido el 2026-09-23 con una revisión de código de 32k caracteres:
+# - effort "low" NO acota el razonamiento en tareas largas: gastó 12.070 tokens
+#   pensando. Con max_tokens 8192 el razonamiento se comía todo el techo y
+#   `content` volvía vacío (cobrado igual). 7 de 8 y luego 9 de 9 workers vacíos.
+# - la ruta importa 16x: DeepInfra/Morph tardó 677 s (más que el timeout de 600);
+#   CoreWeave 41 s y BaseTen 63 s, ambos razonando de verdad. Together contestó en
+#   3 s con {"bugs":[]} y CERO razonamiento: rápido pero perezoso, fuera.
+# - reasoning.max_tokens=2048 recorta, pero la respuesta sale peor (JSON roto).
 AFINADO = {
     "glm": {
-        "max_tokens": 8192,
+        "max_tokens": int(os.environ.get("GLM_MAX_TOKENS", "24000")),  # razonamiento + respuesta
         "top_p": 0.95,
         "temp_directo": 1.0,     # Z.ai: no ajustar temperature y top_p a la vez
         "temp_razonando": 1.0,
-        "sort": "latency",       # el cuello con tareas cortas es el primer token
+        "sort": "throughput",    # con salidas largas manda tokens/s, no el primer token
+        "order": os.environ.get("GLM_PROVIDERS", "CoreWeave,BaseTen").split(","),
+        "ignore": ["Together"],
     },
 }
 
@@ -161,6 +173,9 @@ def afinado_de(model: str) -> dict:
         if clave in m:
             return cfg
     return {}
+
+
+VACIOS: list = []   # respuestas vacías de la corrida: modelo, proveedor, por qué
 
 
 async def llm(
@@ -209,7 +224,7 @@ async def llm(
         # enrutar solo a proveedores que aceptan TODO lo que mandamos, así que
         # nunca caemos ahí por accidente.
         af = afinado_de(model)
-        prov = {"order": PROVEEDORES_OR, "require_parameters": True,
+        prov = {"order": af.get("order", PROVEEDORES_OR), "require_parameters": True,
                 "allow_fallbacks": True,
                 # Los prompts llevan trabajo del usuario. "deny" saca de la
                 # rotación a los proveedores que se reservan el derecho a
@@ -222,19 +237,36 @@ async def llm(
                 "max_price": MAX_PRECIO}
         if af.get("sort"):
             prov["sort"] = af["sort"]
+        if af.get("ignore"):
+            prov["ignore"] = af["ignore"]
         cuerpo = {"usage": {"include": True}, "provider": prov, **extra_or}
         if af.get("top_p"):
             cuerpo["top_p"] = af["top_p"]
-        r = await openrouter.chat.completions.create(
-            model=model, messages=messages, timeout=600,
-            # sin techo explícito, una respuesta larga puede cortarse justo
-            # donde el razonamiento se comió el presupuesto
-            max_tokens=af.get("max_tokens", 4096),
-            temperature=(af.get("temp_directo" if thinking == "none"
-                                else "temp_razonando", temperature)),
-            extra_body=cuerpo,
-        )
-        budget.add("openrouter", model, r.usage)
+        techo = af.get("max_tokens", 4096)
+        for intento in range(2):
+            r = await openrouter.chat.completions.create(
+                model=model, messages=messages, timeout=900,
+                # sin techo explícito, una respuesta larga puede cortarse justo
+                # donde el razonamiento se comió el presupuesto
+                max_tokens=techo,
+                temperature=(af.get("temp_directo" if thinking == "none"
+                                    else "temp_razonando", temperature)),
+                extra_body=cuerpo,
+            )
+            budget.add("openrouter", model, r.usage)
+            if (r.choices[0].message.content or "").strip():
+                break
+            # Vacío: casi siempre el razonamiento se comió el techo. Se dice (antes
+            # se tragaba en silencio) y se reintenta con el MISMO modelo y más techo.
+            u = r.usage
+            det = getattr(u, "completion_tokens_details", None)
+            VACIOS.append({"model": model, "provider": getattr(r, "provider", None),
+                           "finish": r.choices[0].finish_reason,
+                           "razonamiento": getattr(det, "reasoning_tokens", None) if det else None,
+                           "tokens": getattr(u, "completion_tokens", None)})
+            print(f"  ⚠️  {model} devolvió vacío (fin={r.choices[0].finish_reason}, "
+                  f"razonó {VACIOS[-1]['razonamiento']} tokens vía {VACIOS[-1]['provider']}); reintento con más techo")
+            techo = int(techo * 1.5)
     else:
         try:
             r = await deepseek.chat.completions.create(
@@ -347,7 +379,7 @@ RETO: {task}"""
 # DeepSeek cachea el prefijo automáticamente — el hit cuesta ~2% del miss,
 # así que con 8 workers el contexto común se paga una sola vez.
 WORKER_CONSTITUTION = (
-    "Eres un agente worker de un enjambre DeepSeek orquestado para el Build Day. "
+    "Eres un agente worker de un enjambre orquestado. "
     "Reglas: (1) entrega el RESULTADO terminado, nunca un plan ni preámbulos; "
     "(2) si la tarea pide código, entrégalo completo y ejecutable; "
     "(3) sé denso: cero relleno, cero disculpas, cero repetir el enunciado; "
@@ -720,7 +752,7 @@ class Swarm:
         think = str(t.get("thinking", "none")).strip().lower()
         if think not in THINK_UP:
             think = "none"
-        model = "deepseek-flash"
+        model = WORKER_MODEL   # antes "deepseek-flash" fijo: con ENJAMBRE=glm los reintentos se iban a DeepSeek
         warn = False
         async with self.sem:
             out = await llm(prompt, system=WORKER_CONSTITUTION, thinking=think)
@@ -764,7 +796,7 @@ class Swarm:
                     model, think = PRO_MODEL, "medium"
                     ESCALATIONS["n"] += 1
                     self.log({"event": "jev_escalado", "id": t["id"],
-                              "model": model, "from": "deepseek-flash",
+                              "model": model, "from": WORKER_MODEL,
                               "quality": jv["quality"], "fallas": jv["fallas"]})
                 print(f"  🔧 {t['id']} rechazado por Jev (p={jv['p']:.2f}, "
                       f"calidad={jv['quality']:.1f}) → {jv['action']}")
@@ -855,6 +887,10 @@ class Swarm:
                 jevs[e["id"]] = e
         print(f"\n✅ LISTO — aquí está lo que pediste "
               f"({time.monotonic()-self.t0:.0f}s · {budget.line()}):")
+        print(f"   flota: {WORKER_MODEL}"
+              + (f" · ⚠️ {len(VACIOS)} respuestas vacías reintentadas "
+                 f"({', '.join(sorted({str(v['provider']) for v in VACIOS}))})" if VACIOS else " · 0 respuestas vacías"))
+        self.log({"event": "flota", "worker": WORKER_MODEL, "vacios": VACIOS})
         for tid in self.results:
             j = jevs.get(tid)
             fn = tasks and next((t.get("filename") for t in tasks if t["id"] == tid), None)
