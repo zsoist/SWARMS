@@ -1,0 +1,18 @@
+# Pruebas sin red en cada push y PR: si la flota GLM vuelve a quedar mal
+# cableada (reintentos a DeepSeek, techo corto, rutas cruzadas), se ve aquí.
+name: pruebas
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  pruebas:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv run --python 3.12 --with pytest pytest -q
+      - name: el comando arranca y explica
+        run: uv run --python 3.12 enjambre --help
