@@ -96,12 +96,19 @@ DeepSeek runs on its own API. If it fails and an OpenRouter key exists, the call
 | `GLM_PROVIDERS` / `GLM_BRAIN_PROVIDERS` | measured | Provider order for GLM workers and brain. |
 | `GLM_MAX_TOKENS` / `GLM_BRAIN_MAX_TOKENS` | `24000` / `32000` | Reasoning plus answer, for GLM. |
 | `GLM_HEDGE_S` | `150` | Seconds before a second (hedge) request to GLM. |
+| `DEEPSEEK_MAX_TOKENS` / `DEEPSEEK_MAX_TOKENS_RAZONANDO` | `32000` / `64000` | Output limit for DeepSeek, without and with thinking. The API default is 8K without thinking. |
+| `DEEPSEEK_TIMEOUT_S` | `900` | Wait limit for one DeepSeek call. |
 
 ## Measured facts behind the code
 
 | Rule | Measurement |
 |---|---|
-| DeepSeek: thinking off is `thinking: {type: disabled}` | The API turns thinking on (`high`) when you say nothing. `reasoning_effort: "none"` is not a valid value; it failed and sent all calls to OpenRouter. |
+| DeepSeek: thinking off is `thinking: {type: disabled}` | The API turns thinking on (`high`) when you say nothing: 26 reasoning tokens for "Say ok". With `disabled`: 0. |
+| No silent fallback to OpenRouter | Before, any DeepSeek error sent the call to OpenRouter with no message. Without an OpenRouter key, that hid the real error behind a second one. |
+| DeepSeek JSON mode needs the word "json" in the prompt | Without it, the API returns 400 (measured 2026-10-27). The swarm adds the word when it is missing. |
+| DeepSeek: explicit `max_tokens`; `finish_reason` `length` is a failure | The default is 8K without thinking, so a long file was cut and passed as good. Now a cut answer is recorded and tried again with a higher limit. Measured: a 700-line file is 4,150 tokens (15 s) without thinking; 29,189 tokens, 18,251 of them thinking (127 s), with `high`. |
+| DeepSeek 401/402 stops the run; 400/422 never go to OpenRouter | A wrong key or no balance failed each task one by one. A bad request fails the same way on OpenRouter. |
+| DeepSeek cost uses peak prices and the cache | Peak (01–04 and 06–10 UTC, Mon–Fri) is 2× off-peak. With old prices the budget limit was passed 2×. |
 | Thinking is set for each model | GLM with no `effort` costs 3×, with `max` 7×. DeepSeek with `effort: "low"` returned 5 of 6 empty answers; with thinking off, 1 of 6. |
 | An empty answer is never hidden | It goes to the `flota:` line and the swarm tries again with the same model (DeepSeek: with thinking off; GLM: on a different provider). |
 | `require_parameters` (OpenRouter) | Without it, OpenRouter drops parameters that the provider does not support, and it does not tell you. |

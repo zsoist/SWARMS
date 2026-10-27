@@ -32,7 +32,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -60,6 +60,9 @@ FABLE_MODEL = os.environ.get("FABLE_MODEL", "claude-fable-5-1")
 deepseek = AsyncOpenAI(
     api_key=os.environ.get("DEEPSEEK_API_KEY") or "falta-DEEPSEEK_API_KEY",
     base_url=os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+    # El servidor cierra a los 10 min si no empezó; razonando en high una tarea
+    # larga tardó 127 s ya empezada. 429/500/503: el SDK reintenta con espera.
+    max_retries=2,
 )
 # ENJAMBRE_OPENROUTER_KEY, si existe, gana: así el enjambre gasta de su propia
 # llave y no le come el tope diario a otra app que use OPENROUTER_API_KEY
@@ -79,12 +82,22 @@ OPENROUTER_EQUIV = {
 }
 
 
+def es_hora_pico(ahora: datetime | None = None) -> bool:
+    """Hora pico de DeepSeek: 01–04 y 06–10 UTC, lunes a viernes."""
+    t = ahora or datetime.now(timezone.utc)
+    return t.weekday() < 5 and (1 <= t.hour < 4 or 6 <= t.hour < 10)
+
+
 class Budget:
     """Techos de gasto de hoy (fijados por Daniel). Precios aproximados USD/1M tokens
     (referencia: catálogo OpenRouter 2026-09-21, v4.1-flash / v4-pro)."""
 
     PRICES = {"deepseek-flash": (0.15, 0.60), "deepseek-v4-pro": (0.57, 1.70),
               "z-ai/glm-5.3-flash": (0.15, 0.50), "z-ai/glm-5.3": (0.56, 1.76)}
+    # DeepSeek nativo (api-docs 2026-10-27), hora PICO: (caché, entrada, salida).
+    # Fuera de pico cuesta la mitad. Con los precios viejos el techo se pasaba 2x.
+    PRECIOS_DS = {"deepseek-flash": (0.006, 0.30, 1.20),
+                  "deepseek-v4-pro": (0.044, 1.32, 3.96)}
     CEILING = {
         "deepseek": float(os.environ.get("DEEPSEEK_BUDGET_USD", "10")),
         "openrouter": float(os.environ.get("OPENROUTER_BUDGET_USD", "10")),
@@ -101,6 +114,12 @@ class Budget:
         if usage is None:
             return
         cost = getattr(usage, "cost", None)  # OpenRouter lo da directo
+        if cost is None and provider == "deepseek" and model in self.PRECIOS_DS:
+            pc, pi, po = self.PRECIOS_DS[model]
+            factor = 1.0 if es_hora_pico() else 0.5
+            hit = getattr(usage, "prompt_cache_hit_tokens", 0) or 0
+            cost = factor * ((usage.prompt_tokens - hit) * pi + hit * pc
+                             + usage.completion_tokens * po) / 1e6
         if cost is None:
             pi, po = self.PRICES.get(model, (0.55, 2.19))
             cost = (usage.prompt_tokens * pi + usage.completion_tokens * po) / 1e6
@@ -143,6 +162,11 @@ _FLOTAS = {
 _TROPA, _CEREBRO = _FLOTAS.get(ENJAMBRE, _FLOTAS["glm"])
 
 WORKER_MODEL = os.environ.get("WORKER_MODEL", _TROPA)
+# DeepSeek nativo: techo de salida (la API acepta hasta 384K) y espera máxima.
+DS_MAX_TOKENS = int(os.environ.get("DEEPSEEK_MAX_TOKENS", "32000"))
+DS_MAX_TOKENS_RAZONANDO = int(os.environ.get("DEEPSEEK_MAX_TOKENS_RAZONANDO", "64000"))
+DS_TIMEOUT_S = float(os.environ.get("DEEPSEEK_TIMEOUT_S", "900"))
+DS_FIN_INCOMPLETO = ("length", "insufficient_system_resource", "aborted")
 BRAIN_MODEL = os.environ.get("BRAIN_MODEL", _CEREBRO)
 # Proveedores preferidos en OpenRouter, en orden. Los tres soportan el juego
 # completo de parámetros (salida estructurada, seed, penalizaciones) y son los
@@ -283,6 +307,10 @@ async def llm(
     (flash lo trae ON por defecto — si no se apaga, cada worker paga tokens de
     reasoning a precio de output); "low"/"medium"/"high" usan reasoning_effort.
     """
+    if formato == "json" and "json" not in (prompt + (system or "")).lower():
+        # Medido 2026-10-27: sin la palabra "json" DeepSeek responde 400 al modo
+        # JSON (la doc avisa además de un chorro de espacios hasta el techo).
+        prompt += "\n\nReturn only one valid JSON object."
     messages = ([{"role": "system", "content": system}] if system else []) + [
         {"role": "user", "content": prompt}
     ]
@@ -292,8 +320,8 @@ async def llm(
     es_openrouter = "/" in model
     if thinking == "none":
         # API nativa (doc 2026-10): el razonamiento viene ENCENDIDO en high si no
-        # se dice nada, y se apaga con thinking.type=disabled. reasoning_effort
-        # solo acepta low/high/max: "none" era un 400 que caía a OpenRouter.
+        # se dice nada, y se apaga con thinking.type=disabled (la forma que la
+        # doc documenta para el formato OpenAI; medido: responde en ~1 s).
         extra_ds = {"thinking": {"type": "disabled"}}
         # Para los slugs de OpenRouter no vale {"reasoning": {"enabled": False}}:
         # GLM lo rechaza con 400 "Reasoning is mandatory for this endpoint and
@@ -373,28 +401,41 @@ async def llm(
                 prov["ignore"] = sorted(set(prov.get("ignore", [])) | {VACIOS[-1]["provider"]})
     else:
         extra = {"response_format": {"type": "json_object"}} if formato == "json" else {}
+        # Sin max_tokens el techo por defecto es 8K sin razonar: un archivo de
+        # 600+ líneas salía cortado (fin=length) y pasaba como bueno.
+        techo = DS_MAX_TOKENS if thinking == "none" else DS_MAX_TOKENS_RAZONANDO
         try:
             for intento in range(2):
                 r = await deepseek.chat.completions.create(
-                    model=model, messages=messages, timeout=600,
+                    model=model, messages=messages, timeout=DS_TIMEOUT_S, max_tokens=techo,
                     temperature=temperature, extra_body=extra_ds, **extra,
                 )
                 budget.add("deepseek", model, r.usage)
-                if (r.choices[0].message.content or "").strip():
+                fin = r.choices[0].finish_reason
+                if (r.choices[0].message.content or "").strip() and fin not in DS_FIN_INCOMPLETO:
                     break
-                # Vacío: el razonamiento se comió la salida. Se registra y el
-                # reintento va al MISMO modelo con el razonamiento apagado.
+                # Vacío o cortado: se registra (nunca en silencio) y el reintento va
+                # al MISMO modelo, sin razonar y con el doble de techo.
                 det = getattr(r.usage, "completion_tokens_details", None)
-                VACIOS.append({"model": model, "provider": "deepseek",
-                               "finish": r.choices[0].finish_reason,
+                VACIOS.append({"model": model, "provider": "deepseek", "finish": fin,
                                "razonamiento": getattr(det, "reasoning_tokens", None) if det else None,
                                "tokens": getattr(r.usage, "completion_tokens", None)})
-                print(f"  ⚠️  {model} devolvió vacío (fin={r.choices[0].finish_reason}); "
-                      f"reintento sin razonamiento")
+                print(f"  ⚠️  {model} devolvió {'vacío' if not (r.choices[0].message.content or '').strip() else 'cortado'} "
+                      f"(fin={fin}); reintento sin razonamiento y con más techo")
                 extra_ds = {"thinking": {"type": "disabled"}}
+                techo = min(techo * 2, 384_000)
         except RuntimeError:
             raise  # techo de presupuesto: no hacer fallback, parar
         except Exception as e:
+            codigo = getattr(e, "status_code", None)
+            # 400/422: la petición está mal; en OpenRouter fallaría igual.
+            if codigo in (400, 422):
+                raise
+            # 401/402 (llave mala, sin saldo) sin OpenRouter: parar la misión
+            # entera con la causa, no fallar tarea por tarea.
+            if codigo in (401, 402) and not OR_KEY:
+                causa = "llave inválida" if codigo == 401 else "sin saldo en platform.deepseek.com"
+                raise RuntimeError(f"⛔ DeepSeek {codigo}: {causa}") from e
             # Sin llave de OpenRouter no hay a dónde caer: el error real de
             # DeepSeek vale más que un 401 de un servicio que no se usa.
             if not OR_KEY:
@@ -785,8 +826,10 @@ THINK_UP = {"none": "low", "low": "medium", "medium": "high", "high": "high"}
 class Swarm:
     ensamblar = os.environ.get("ENSAMBLAR", "1") != "0"
 
-    def __init__(self, task: str, resume_dir: Path | None = None):
-        if len(task.split()) < 4 and not resume_dir:
+    def __init__(self, task: str, resume_dir: Path | None = None, plan_externo: bool = False):
+        # Con --plan las tareas ya son explícitas: el "task" es solo un título, y
+        # rechazar "Pricing page" dejaba al orquestador sin correr nada.
+        if len(task.split()) < 4 and not resume_dir and not plan_externo:
             sys.exit(f"⛔ Reto demasiado vago ({task!r}) — no quemo tokens en eso.")
         self.task = task
         self.run_dir = resume_dir or ROOT / "runs" / f"{datetime.now():%Y%m%d-%H%M%S}-swarm"
@@ -929,7 +972,8 @@ class Swarm:
         context = "\n\n".join(
             f"[insumo de {d}]\n{self.results[d][:2000]}" for d in t.get("deps", [])
         )
-        prompt = (context + "\n\n" if context else "") + leer_archivos(t.get("archivos")) + t["prompt"]
+        # archivos primero: es lo estable entre tareas, y DeepSeek cachea el prefijo común
+        prompt = leer_archivos(t.get("archivos")) + (context + "\n\n" if context else "") + t["prompt"]
         think = str(t.get("thinking", "none")).strip().lower()
         if think not in THINK_UP:
             think = "none"
@@ -1184,7 +1228,7 @@ def cli():
         # No loggear aquí: fuera del event loop el beam a Supabase se pierde;
         # run() lo loggea porque plan_needs_log queda en True.
         spec = json.loads(Path(sys.argv[2]).read_text())
-        s = Swarm(spec.get("task", "plan externo"))
+        s = Swarm(spec.get("task", "plan externo"), plan_externo=True)
         s.cached_plan = spec["tasks"]
         if spec.get("ensamblar") is False:
             s.ensamblar = False

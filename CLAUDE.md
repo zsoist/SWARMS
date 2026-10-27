@@ -26,10 +26,14 @@ node ejemplos/banco_proveedores.mjs <model> <prompt.txt> <prov...>   # measure r
 
 - **The fleet that you ask for must answer.** No fixed model names in the code: retries use `WORKER_MODEL`.
   A fixed `"deepseek-flash"` sent 16 of 17 "GLM" answers to DeepSeek, and nobody saw it.
-- **DeepSeek native: thinking off is `thinking: {type: disabled}`.** `reasoning_effort` accepts only
-  `low`/`high`/`max`. The value `"none"` failed, and each call went silently to OpenRouter.
+- **DeepSeek native: turn thinking off on purpose.** With no setting, thinking is on (`high`) and costs output tokens.
+  We send `thinking: {type: disabled}` (measured 2026-10-27: 0 reasoning tokens; `reasoning_effort: "none"` also works).
 - **No silent fallback.** DeepSeek goes to OpenRouter only when an OpenRouter key exists, and the output says so.
   Without that key, show the real DeepSeek error.
+- **DeepSeek JSON mode needs the word "json" in the prompt.** Without it: 400. `llm()` adds it.
+- **A cut answer is a failure.** Set `max_tokens` (DeepSeek default: 8K without thinking).
+  `finish_reason` `length`, `insufficient_system_resource`, or `aborted` → record in `VACIOS` and retry with more.
+- **Stop the run on 401/402** (wrong key, no balance). Never send 400/422 to OpenRouter: they fail there too.
 - **High token limit for GLM** (it thinks also with effort low): 24k for workers, 32k for the brain.
   With 8,192 the `content` came back empty, and it was billed.
 - **Workers and brain have different routes** (`AFINADO`, the longest key wins).

@@ -360,3 +360,86 @@ def test_check_con_llave_mala_da_una_linea_clara(nucleo_ds, monkeypatch):
     with pytest.raises(SystemExit) as fin:
         nucleo_ds.cli()
     assert "401" in str(fin.value.code) and "deepseek-flash" in str(fin.value.code)
+
+
+def test_modo_json_sin_la_palabra_json_la_agrega(nucleo_ds, monkeypatch):
+    vistos = []
+
+    async def crear(**kw):
+        vistos.append(kw)
+        return respuesta('{"plans": []}')
+
+    monkeypatch.setattr(nucleo_ds.deepseek.chat.completions, "create", crear)
+    asyncio.run(nucleo_ds.llm("Give 3 SaaS plans with id and price.", formato="json"))
+    # medido: sin la palabra "json" DeepSeek responde 400 al modo JSON
+    assert "json" in vistos[0]["messages"][-1]["content"].lower()
+
+
+def test_deepseek_cortado_se_reintenta_con_mas_techo(nucleo_ds, monkeypatch):
+    llamadas = []
+
+    async def crear(**kw):
+        llamadas.append(kw)
+        return respuesta("export const a = 1;\n" * 10, fin="length" if len(llamadas) == 1 else "stop")
+
+    monkeypatch.setattr(nucleo_ds.deepseek.chat.completions, "create", crear)
+    asyncio.run(nucleo_ds.llm("archivo largo", thinking="none"))
+    assert llamadas[0]["max_tokens"] >= 32000          # el defecto de 8K cortaba archivos largos
+    assert len(llamadas) == 2 and llamadas[1]["max_tokens"] > llamadas[0]["max_tokens"]
+    assert nucleo_ds.VACIOS[0]["finish"] == "length"
+
+
+class _ErrorHttp(Exception):
+    def __init__(self, codigo):
+        super().__init__(f"Error code: {codigo}")
+        self.status_code = codigo
+
+
+def test_sin_saldo_para_la_mision_entera(nucleo_ds, monkeypatch):
+    async def falla(**kw):
+        raise _ErrorHttp(402)
+
+    monkeypatch.setattr(nucleo_ds.deepseek.chat.completions, "create", falla)
+    # RuntimeError = run_task aborta la misión, en vez de fallar tarea por tarea
+    with pytest.raises(RuntimeError, match="402"):
+        asyncio.run(nucleo_ds.llm("x"))
+
+
+def test_peticion_mala_no_cae_a_openrouter(nucleo_ds, monkeypatch):
+    monkeypatch.setattr(nucleo_ds, "OR_KEY", "sk-or-v1-prueba")
+
+    async def falla(**kw):
+        raise _ErrorHttp(400)
+
+    async def no_debia(**kw):
+        raise AssertionError("un 400 fallaría igual en OpenRouter")
+
+    monkeypatch.setattr(nucleo_ds.deepseek.chat.completions, "create", falla)
+    monkeypatch.setattr(nucleo_ds.openrouter.chat.completions, "create", no_debia)
+    with pytest.raises(_ErrorHttp):
+        asyncio.run(nucleo_ds.llm("x"))
+
+
+def test_precio_deepseek_pico_y_cache(nucleo_ds, monkeypatch):
+    from datetime import datetime, timezone
+    assert nucleo_ds.es_hora_pico(datetime(2026, 10, 27, 7, tzinfo=timezone.utc))       # martes 07 UTC
+    assert not nucleo_ds.es_hora_pico(datetime(2026, 10, 25, 7, tzinfo=timezone.utc))   # domingo
+    monkeypatch.setattr(nucleo_ds, "es_hora_pico", lambda: True)
+    b = nucleo_ds.Budget()
+    b.add("deepseek", "deepseek-flash", NS(prompt_tokens=1_000_000, prompt_cache_hit_tokens=0,
+                                           completion_tokens=1_000_000))
+    assert abs(b.spent["deepseek"] - 1.50) < 1e-9     # 0.30 + 1.20 en pico
+
+
+def test_plan_externo_con_titulo_corto_corre(nucleo, monkeypatch, tmp_path):
+    async def llm(*a, **k):
+        return json.dumps({"ok": True}) + " " * 100
+
+    monkeypatch.setattr(nucleo, "llm", llm)
+    plan = tmp_path / "plan.json"
+    plan.write_text(json.dumps({"task": "Pricing", "ensamblar": False,
+                                "tasks": [{"id": "a", "prompt": "p", "deps": [], "filename": "a.json"}]}))
+    monkeypatch.setattr(sys, "argv", ["enjambre", "--plan", str(plan)])
+    with pytest.raises(SystemExit) as fin:
+        nucleo.cli()
+    assert fin.value.code == 0
