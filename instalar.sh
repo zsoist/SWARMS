@@ -18,6 +18,7 @@ ZIP="https://github.com/zsoist/SWARMS/archive/refs/heads/$REF.zip"
 ENV_FILE="$HOME/.enjambre.env"
 CLAUDE_DIR="$HOME/.claude"
 
+hay_tty() { ( exec < /dev/tty ) 2>/dev/null; }
 paso() { printf '\n\033[1m%s\033[0m\n' "$1"; }
 
 # 1. uv
@@ -37,21 +38,34 @@ command -v enjambre
 
 # 3. DeepSeek key
 paso "3/5  DeepSeek key"
-if [ -f "$ENV_FILE" ] && grep -q '^DEEPSEEK_API_KEY=.\+' "$ENV_FILE"; then
-  echo "Key found in $ENV_FILE. No change."
-else
-  KEY="${DEEPSEEK_API_KEY:-}"
-  if [ -z "$KEY" ]; then
-    printf 'Paste your DeepSeek API key (the text does not show) and push Enter: '
-    read -rs KEY < /dev/tty
-    echo
+tiene_llave() { [ -f "$ENV_FILE" ] && grep -Eq '^(export )?DEEPSEEK_API_KEY=.+' "$ENV_FILE"; }
+
+pedir_llave() {   # $1 = text for the prompt
+  if ! hay_tty; then
+    echo "⛔ No terminal to ask for the key. Run the install line in the Terminal app,"
+    echo "   or put the key in front of it:  DEEPSEEK_API_KEY=sk-... bash -c \"\$(curl -fsSL $RAW/instalar.sh)\""
+    exit 1
   fi
+  printf '%s' "$1"
+  read -rs KEY < /dev/tty
+  echo
+}
+
+guardar_llave() {
   case "$KEY" in
     sk-*) ;;
     *) echo "⛔ That is not a DeepSeek key (it must start with sk-). Run the installer again."; exit 1 ;;
   esac
   ( umask 077
-    cat > "$ENV_FILE" <<EOF
+    if [ -f "$ENV_FILE" ]; then
+      # Keep the other settings. Replace only the key line.
+      grep -Ev '^(export )?DEEPSEEK_API_KEY=' "$ENV_FILE" > "$ENV_FILE.tmp" || true
+      printf 'DEEPSEEK_API_KEY=%s\n' "$KEY" >> "$ENV_FILE.tmp"
+      # This kit is for DeepSeek: set the fleet if the file does not say it.
+      grep -Eq '^(export )?ENJAMBRE=' "$ENV_FILE.tmp" || echo 'ENJAMBRE=deepseek' >> "$ENV_FILE.tmp"
+      mv "$ENV_FILE.tmp" "$ENV_FILE"
+    else
+      cat > "$ENV_FILE" <<EOF
 # enjambre settings. Only you can read this file. Never put it in git.
 DEEPSEEK_API_KEY=$KEY
 ENJAMBRE=deepseek
@@ -60,8 +74,24 @@ DEEPSEEK_BUDGET_USD=5
 # Workers that run at the same time.
 ENJAMBRE_PARALELO=12
 EOF
+    fi
+    chmod 600 "$ENV_FILE"
   )
   echo "Key saved in $ENV_FILE."
+}
+
+KEY="${DEEPSEEK_API_KEY:-}"
+if [ -n "$KEY" ]; then
+  guardar_llave
+elif tiene_llave; then
+  echo "Key found in $ENV_FILE."
+  if hay_tty; then
+    pedir_llave 'Paste a new key to replace it, or push Enter to keep it: '
+    [ -n "$KEY" ] && guardar_llave
+  fi
+else
+  pedir_llave 'Paste your DeepSeek API key (the text does not show) and push Enter: '
+  guardar_llave
 fi
 
 # 4. Claude Code skill and global rule
@@ -101,10 +131,15 @@ PY
 # Test
 paso "Test: one small call to DeepSeek"
 if ! enjambre --check; then
-  echo "⛔ The test call failed. Look at the error above."
-  echo "   Usual causes: a wrong key, or no balance at https://platform.deepseek.com"
-  echo "   To change the key: edit $ENV_FILE, then run: enjambre --check"
-  exit 1
+  echo "⛔ The test call failed. Usual causes: a wrong key, or no balance at https://platform.deepseek.com"
+  if hay_tty; then
+    pedir_llave 'Paste the key again (or push Enter to stop): '
+    [ -z "$KEY" ] && exit 1
+    guardar_llave
+    enjambre --check || { echo "⛔ It failed again. Check the key and the balance, then run the installer again."; exit 1; }
+  else
+    exit 1
+  fi
 fi
 
 cat <<'EOF'
