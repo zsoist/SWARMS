@@ -8,7 +8,7 @@
 #   2. Installs the `enjambre` command.
 #   3. Keeps your DeepSeek key in ~/.enjambre.env (only you can read it).
 #   4. Installs the `enjambre` skill for Claude Code and a short rule in ~/.claude/CLAUDE.md.
-#   5. Sets Claude Code to Opus with medium effort, if you did not set a model before.
+#   5. Sets Claude Code to Opus, if you did not set a model before.
 # Then it makes one small test call to DeepSeek.
 set -euo pipefail
 
@@ -78,7 +78,9 @@ printf '%s\n' "$BLOQUE" >> "$CLAUDE_DIR/CLAUDE.md.tmp"
 mv "$CLAUDE_DIR/CLAUDE.md.tmp" "$CLAUDE_DIR/CLAUDE.md"
 echo "Rule: $CLAUDE_DIR/CLAUDE.md"
 
-# 5. Opus with medium effort (only if no model is set)
+# 5. Opus as the default model (only if no model is set)
+# Opus 5.5 uses medium effort by default. The old top-level "effortLevel" key does
+# not apply to it, so we do not write it.
 paso "5/5  Claude Code model"
 uv run --quiet --no-project python - "$CLAUDE_DIR/settings.json" <<'PY'
 import json, sys, pathlib
@@ -86,15 +88,14 @@ p = pathlib.Path(sys.argv[1])
 try:
     s = json.loads(p.read_text()) if p.exists() else {}
 except json.JSONDecodeError:
-    print(f"{p} is not valid JSON. No change. Set the model with /model in Claude Code.")
+    print(f"{p} is not valid JSON. No change. Select Opus in the model menu of Claude.")
     sys.exit(0)
-cambios = {k: v for k, v in {"model": "opus", "effortLevel": "medium"}.items() if k not in s}
-if cambios:
-    s.update(cambios)
-    p.write_text(json.dumps(s, indent=2) + "\n")
-    print(f"Set in {p}: {cambios}")
+if "model" in s:
+    print(f"Model already set in {p}: {s['model']}. No change.")
 else:
-    print(f"You already set a model in {p}. No change.")
+    s["model"] = "opus"
+    p.write_text(json.dumps(s, indent=2) + "\n")
+    print(f"Set in {p}: model = opus")
 PY
 
 # Test
@@ -109,7 +110,9 @@ fi
 cat <<'EOF'
 
 ✅ Ready.
-   1. Close and open Claude (the Desktop app or the terminal).
-   2. Open your project. Ask for a feature. For heavy work, Claude uses the swarm.
+   1. Quit Claude completely and open it again (Desktop app or terminal).
+      Claude reads the new skill only when it starts.
+   2. Open a project folder. Ask for a feature. For heavy work, Claude uses the swarm.
    3. To force it, write: "use the enjambre skill".
+   Guide: https://github.com/zsoist/SWARMS/blob/main/START.md
 EOF

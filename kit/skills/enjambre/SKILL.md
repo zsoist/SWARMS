@@ -1,6 +1,10 @@
 ---
 name: enjambre
 description: Send heavy work to a cheap DeepSeek swarm. Use it when a task makes 3 or more new files or more than about 150 lines - for example pages, components, API routes, Supabase SQL migrations, seed data, tests, docs, or research drafts. You plan and review; the swarm writes. Do not use it for small edits, one-line fixes, or debugging.
+when_to_use: The user says "build an app", "make an app", "add a feature", "add a page", "scaffold", "generate components", "write tests", "write the migrations", "write the docs", or "use the enjambre skill".
+allowed-tools:
+  - Bash(enjambre *)
+  - Bash(~/.local/bin/enjambre *)
 ---
 
 # enjambre: you plan, the swarm writes
@@ -34,13 +38,17 @@ Do the work yourself for:
 1. Read only the files that you need to make the plan.
 2. Make sure that `.gitignore` contains `runs/` and `.enjambre/`. Add them if they are missing.
 3. Write the plan to `.enjambre/plan.json` (format below).
-4. Run the swarm from the project root. Set the Bash timeout to 600000 ms:
+4. Run the swarm from the project root, in the foreground. Set the Bash timeout to 600000 ms.
+   Send the output through `tail`, so you read only the summary:
 
    ```bash
-   enjambre --plan .enjambre/plan.json
+   enjambre --plan .enjambre/plan.json 2>&1 | tail -n 40
    ```
 
-5. Read only the end of the output. It shows the path of each file and a `flota:` line.
+   If the shell does not find `enjambre`, use `~/.local/bin/enjambre`.
+   If the run takes more than 10 minutes, it continues in the background. Then read its output file.
+
+5. Read the summary. It shows the path of each file, the cost, and a `flota:` line.
 6. Copy each file to its place with `cp`. Do not read a file and write it again: that costs Opus tokens.
 
    ```bash
@@ -87,7 +95,8 @@ Do the work yourself for:
 - **Set `thinking` for each task:**
   - `"none"`: mechanical work (most tasks).
   - `"low"`: normal logic.
-  - `"high"`: hard logic, for example auth rules or money calculations.
+  - `"high"`: hard logic, for example auth rules or money calculations. It is slower (a long file can take 2 minutes) and costs more.
+- **Make large files smaller.** One task, one file, less than about 600 lines. Split a larger file into more tasks.
 - **Set `"ensamblar": false`** when the result is code or data. It is faster and cheaper.
 - **Tell the worker to return only the file.** The swarm removes code fences, but clear output is better.
 
@@ -99,16 +108,25 @@ Do the work yourself for:
 
 ## Supabase and Vercel
 
-- **SQL migrations:** the swarm writes the SQL. You read it before you apply it. Apply it with the Supabase connector or with `supabase db push`. Always enable Row Level Security on new tables.
+- **SQL migrations:** the swarm writes the SQL as a file in `supabase/migrations/`. You read it and show it to the user before you apply it.
+- **Row Level Security:** enable RLS and write the policies in the same migration that creates the table. A table without RLS is open to everyone on the internet.
+- **Keys:** only the publishable key (`sb_publishable_…`, old name `anon`) goes in browser code and in `NEXT_PUBLIC_*` variables. The secret key (`sb_secret_…`, old name `service_role`) goes only in server code. Never give it a `NEXT_PUBLIC_` prefix.
+- **Dev first:** apply migrations to the dev project first. Apply them to prod only after the user says yes.
+- **Never** run `DROP`, `TRUNCATE`, `supabase db reset`, or `DELETE` without `WHERE` on prod without a backup and a clear yes from the user.
+- **After a schema change,** run the Supabase Security Advisor and fix each error.
 - **Deploy:** Vercel deploys on `git push` when the repo is connected. You can also use the Vercel connector or `vercel deploy`.
-- **Environment variables:** keep them in `.env.local` and in the Vercel project settings. Never put them in a plan.
+- **Environment variables:** keep them in `.env.local` and in Vercel → Project → Settings → Environment Variables. Set them for Production and for Preview. A changed variable applies only after a new deploy: redeploy.
+- **Auth URLs:** in Supabase → Authentication → URL Configuration, set Site URL to the Vercel URL. Add the preview URL pattern `https://*-<team-slug>.vercel.app/**`. Without this, sign-in links go to `localhost`.
+- Never put environment variables or keys in a plan.
 
 ## If something fails
 
 | Output | Cause | Action |
 |---|---|---|
 | `⛔ falta DEEPSEEK_API_KEY` | No key in `~/.enjambre.env` | Tell the user to run the installer again. |
-| `command not found: enjambre` | The tool is not on the PATH | Run `uv tool update-shell` and open a new terminal. |
+| `command not found: enjambre` | The app does not see the tool folder | Use `~/.local/bin/enjambre`. |
+| `⛔ DeepSeek 401` / `402` | Wrong key / no balance | Tell the user. The run stops. Balance: <https://platform.deepseek.com>. |
+| `⚠️ … devolvió cortado` | The answer reached the token limit; the swarm tried again with more | No action if the file is complete. Make the task smaller if it repeats. |
 | `flota: ... ⚠️ N respuestas vacías` | DeepSeek returned empty text; the swarm tried again | No action if the files are there. |
 | `💸 Techo de deepseek alcanzado` | The run reached the budget limit | Tell the user. The limit is `DEEPSEEK_BUDGET_USD` in `~/.enjambre.env`. |
 | A file is bad | The prompt was not clear | Run that task again with a more exact prompt. |
