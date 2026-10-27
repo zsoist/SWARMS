@@ -19,6 +19,7 @@ RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 @pytest.fixture()
 def nucleo(tmp_path, monkeypatch):
     monkeypatch.setenv("ENJAMBRE_DIR", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))          # que ~/.enjambre.env del que corre no se cuele
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-prueba")
     for v in ("SUPABASE_URL", "ENJAMBRE", "WORKER_MODEL", "BRAIN_MODEL", "ENJAMBRE_OPENROUTER_KEY", "ENSAMBLAR", "ENJAMBRE_PARALELO", "MAX_DEEPSEEK_AGENTS"):
         monkeypatch.delenv(v, raising=False)
@@ -236,3 +237,126 @@ def test_razonamiento_desbocado_se_acota_en_el_reintento(nucleo, monkeypatch):
     assert asyncio.run(nucleo.llm("revisa", thinking="none")) == '{"bugs": []}'
     assert cuerpos[0]["reasoning"] == {"effort": "low"}
     assert cuerpos[1]["reasoning"] == {"max_tokens": 8000}      # acotado, no solo más techo
+
+
+# ── DeepSeek nativo (flota ENJAMBRE=deepseek, solo DEEPSEEK_API_KEY) ──────────
+
+@pytest.fixture()
+def nucleo_ds(tmp_path, monkeypatch):
+    monkeypatch.setenv("ENJAMBRE_DIR", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("ENJAMBRE", "deepseek")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-prueba")
+    for v in ("SUPABASE_URL", "WORKER_MODEL", "BRAIN_MODEL", "OPENROUTER_API_KEY", "ENJAMBRE_OPENROUTER_KEY"):
+        monkeypatch.delenv(v, raising=False)
+    sys.modules.pop("enjambre.nucleo", None)
+    import enjambre.nucleo as n
+    n.VACIOS.clear()
+    return n
+
+
+def test_deepseek_apaga_el_razonamiento_como_dice_su_api(nucleo_ds, monkeypatch):
+    llamadas = []
+
+    async def crear(**kw):
+        llamadas.append(kw)
+        return respuesta('{"ok": true}')
+
+    monkeypatch.setattr(nucleo_ds.deepseek.chat.completions, "create", crear)
+    asyncio.run(nucleo_ds.llm("x", thinking="none", formato="json"))
+    asyncio.run(nucleo_ds.llm("x", thinking="high"))
+    # reasoning_effort="none" era un 400 que mandaba todo a OpenRouter
+    assert llamadas[0]["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert llamadas[0]["response_format"] == {"type": "json_object"}
+    assert llamadas[1]["extra_body"] == {"thinking": {"type": "enabled"}, "reasoning_effort": "high"}
+    assert all(c["model"] == "deepseek-flash" for c in llamadas)
+
+
+def test_deepseek_vacio_se_registra_y_reintenta_sin_razonar(nucleo_ds, monkeypatch):
+    llamadas = []
+
+    async def crear(**kw):
+        llamadas.append(kw)
+        return respuesta("" if len(llamadas) == 1 else "listo", fin="length", razon=8000)
+
+    monkeypatch.setattr(nucleo_ds.deepseek.chat.completions, "create", crear)
+    assert asyncio.run(nucleo_ds.llm("x", thinking="high")) == "listo"
+    assert len(llamadas) == 2 and llamadas[1]["model"] == "deepseek-flash"
+    assert llamadas[1]["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert nucleo_ds.VACIOS and nucleo_ds.VACIOS[0]["provider"] == "deepseek"
+
+
+def test_deepseek_sin_llave_de_openrouter_muestra_el_error_real(nucleo_ds, monkeypatch):
+    async def falla(**kw):
+        raise ValueError("400 de DeepSeek")
+
+    async def no_debia(**kw):
+        raise AssertionError("cayó a OpenRouter sin llave")
+
+    monkeypatch.setattr(nucleo_ds.deepseek.chat.completions, "create", falla)
+    monkeypatch.setattr(nucleo_ds.openrouter.chat.completions, "create", no_debia)
+    with pytest.raises(ValueError, match="400 de DeepSeek"):
+        asyncio.run(nucleo_ds.llm("x"))
+
+
+def test_llave_global_en_el_home(tmp_path):
+    casa, obra = tmp_path / "casa", tmp_path / "obra"
+    casa.mkdir(); obra.mkdir()
+    (casa / ".enjambre.env").write_text("ENJAMBRE=deepseek\nDEEPSEEK_API_KEY=sk-global\n")
+    code = "import enjambre.nucleo as n, os; print(n.WORKER_MODEL, os.environ['DEEPSEEK_API_KEY'])"
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("ENJAMBRE", "DEEPSEEK", "WORKER", "BRAIN"))}
+    env.update({"ENJAMBRE_DIR": str(obra), "HOME": str(casa)})
+    r = subprocess.run([sys.executable, "-c", code], cwd=RAIZ, env=env, capture_output=True, text=True, timeout=60)
+    assert r.stdout.strip() == "deepseek-flash sk-global", r.stderr
+
+
+def test_archivos_del_plan_llegan_a_la_tropa(nucleo, monkeypatch, tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "api.ts").write_text("export const precio = 42")
+    vistos = []
+
+    async def llm(prompt, **k):
+        vistos.append(prompt)
+        return json.dumps({"ok": True}) + " " * 100
+
+    monkeypatch.setattr(nucleo, "llm", llm)
+    s = nucleo.Swarm("tests para la api de precios del proyecto")
+    s.cached_plan = [{"id": "a", "prompt": "escribe tests", "deps": [], "filename": "a.json",
+                      "archivos": ["src/api.ts", "no/existe.ts"]}]
+    s.ensamblar = False
+    asyncio.run(s.run())
+    assert "export const precio = 42" in vistos[0] and "[archivo src/api.ts]" in vistos[0]
+    assert "no/existe.ts: no se pudo leer" in vistos[0]
+
+
+def test_solo_llave_de_deepseek_elige_flota_deepseek(nucleo_ds, monkeypatch, tmp_path):
+    monkeypatch.delenv("ENJAMBRE", raising=False)
+    sys.modules.pop("enjambre.nucleo", None)
+    import enjambre.nucleo as n
+    assert (n.ENJAMBRE, n.WORKER_MODEL, n.BRAIN_MODEL) == ("deepseek", "deepseek-flash", "deepseek-v4-pro")
+
+
+def test_check_hace_una_sola_llamada(nucleo_ds, monkeypatch, capsys):
+    llamadas = []
+
+    async def crear(**kw):
+        llamadas.append(kw)
+        return respuesta("ok")
+
+    monkeypatch.setattr(nucleo_ds.deepseek.chat.completions, "create", crear)
+    monkeypatch.setattr(sys, "argv", ["enjambre", "--check"])
+    with pytest.raises(SystemExit) as fin:
+        nucleo_ds.cli()
+    assert fin.value.code == 0 and len(llamadas) == 1
+    assert "deepseek-flash" in capsys.readouterr().out
+
+
+def test_check_con_llave_mala_da_una_linea_clara(nucleo_ds, monkeypatch):
+    async def falla(**kw):
+        raise ValueError("Error code: 401 - Authentication Fails")
+
+    monkeypatch.setattr(nucleo_ds.deepseek.chat.completions, "create", falla)
+    monkeypatch.setattr(sys, "argv", ["enjambre", "--check"])
+    with pytest.raises(SystemExit) as fin:
+        nucleo_ds.cli()
+    assert "401" in str(fin.value.code) and "deepseek-flash" in str(fin.value.code)

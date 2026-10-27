@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# SWARMS installer for macOS and Linux (on Windows, use WSL).
+#
+#   curl -fsSL https://raw.githubusercontent.com/zsoist/SWARMS/main/instalar.sh | bash
+#
+# It does 5 things. You can run it again: each step is safe to repeat.
+#   1. Installs uv (the Python tool manager) if it is missing.
+#   2. Installs the `enjambre` command.
+#   3. Keeps your DeepSeek key in ~/.enjambre.env (only you can read it).
+#   4. Installs the `enjambre` skill for Claude Code and a short rule in ~/.claude/CLAUDE.md.
+#   5. Sets Claude Code to Opus with medium effort, if you did not set a model before.
+# Then it makes one small test call to DeepSeek.
+set -euo pipefail
+
+REF="${ENJAMBRE_REF:-main}"
+RAW="https://raw.githubusercontent.com/zsoist/SWARMS/$REF"
+ZIP="https://github.com/zsoist/SWARMS/archive/refs/heads/$REF.zip"
+ENV_FILE="$HOME/.enjambre.env"
+CLAUDE_DIR="$HOME/.claude"
+
+paso() { printf '\n\033[1m%s\033[0m\n' "$1"; }
+
+# 1. uv
+paso "1/5  uv"
+if ! command -v uv >/dev/null 2>&1; then
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  export PATH="$HOME/.local/bin:$PATH"
+fi
+uv --version
+
+# 2. enjambre command
+paso "2/5  enjambre command"
+uv tool install --force --reinstall --quiet "enjambre @ $ZIP"
+uv tool update-shell >/dev/null 2>&1 || true
+export PATH="$(uv tool dir --bin):$PATH"
+command -v enjambre
+
+# 3. DeepSeek key
+paso "3/5  DeepSeek key"
+if [ -f "$ENV_FILE" ] && grep -q '^DEEPSEEK_API_KEY=.\+' "$ENV_FILE"; then
+  echo "Key found in $ENV_FILE. No change."
+else
+  KEY="${DEEPSEEK_API_KEY:-}"
+  if [ -z "$KEY" ]; then
+    printf 'Paste your DeepSeek API key (the text does not show) and push Enter: '
+    read -rs KEY < /dev/tty
+    echo
+  fi
+  case "$KEY" in
+    sk-*) ;;
+    *) echo "⛔ That is not a DeepSeek key (it must start with sk-). Run the installer again."; exit 1 ;;
+  esac
+  ( umask 077
+    cat > "$ENV_FILE" <<EOF
+# enjambre settings. Only you can read this file. Never put it in git.
+DEEPSEEK_API_KEY=$KEY
+ENJAMBRE=deepseek
+# Stop a run when it costs more than this (USD).
+DEEPSEEK_BUDGET_USD=5
+# Workers that run at the same time.
+ENJAMBRE_PARALELO=12
+EOF
+  )
+  echo "Key saved in $ENV_FILE."
+fi
+
+# 4. Claude Code skill and global rule
+paso "4/5  Claude Code skill"
+mkdir -p "$CLAUDE_DIR/skills/enjambre"
+curl -fsSL "$RAW/kit/skills/enjambre/SKILL.md" -o "$CLAUDE_DIR/skills/enjambre/SKILL.md"
+echo "Skill: $CLAUDE_DIR/skills/enjambre/SKILL.md"
+BLOQUE="$(curl -fsSL "$RAW/kit/CLAUDE.global.md")"
+touch "$CLAUDE_DIR/CLAUDE.md"
+# Remove the old block (if there is one), then add the new block.
+awk '/<!-- enjambre:start -->/{s=1} !s{print} /<!-- enjambre:end -->/{s=0}' \
+  "$CLAUDE_DIR/CLAUDE.md" > "$CLAUDE_DIR/CLAUDE.md.tmp"
+printf '%s\n' "$BLOQUE" >> "$CLAUDE_DIR/CLAUDE.md.tmp"
+mv "$CLAUDE_DIR/CLAUDE.md.tmp" "$CLAUDE_DIR/CLAUDE.md"
+echo "Rule: $CLAUDE_DIR/CLAUDE.md"
+
+# 5. Opus with medium effort (only if no model is set)
+paso "5/5  Claude Code model"
+uv run --quiet --no-project python - "$CLAUDE_DIR/settings.json" <<'PY'
+import json, sys, pathlib
+p = pathlib.Path(sys.argv[1])
+try:
+    s = json.loads(p.read_text()) if p.exists() else {}
+except json.JSONDecodeError:
+    print(f"{p} is not valid JSON. No change. Set the model with /model in Claude Code.")
+    sys.exit(0)
+cambios = {k: v for k, v in {"model": "opus", "effortLevel": "medium"}.items() if k not in s}
+if cambios:
+    s.update(cambios)
+    p.write_text(json.dumps(s, indent=2) + "\n")
+    print(f"Set in {p}: {cambios}")
+else:
+    print(f"You already set a model in {p}. No change.")
+PY
+
+# Test
+paso "Test: one small call to DeepSeek"
+if ! enjambre --check; then
+  echo "⛔ The test call failed. Look at the error above."
+  echo "   Usual causes: a wrong key, or no balance at https://platform.deepseek.com"
+  echo "   To change the key: edit $ENV_FILE, then run: enjambre --check"
+  exit 1
+fi
+
+cat <<'EOF'
+
+✅ Ready.
+   1. Close and open Claude (the Desktop app or the terminal).
+   2. Open your project. Ask for a feature. For heavy work, Claude uses the swarm.
+   3. To force it, write: "use the enjambre skill".
+EOF

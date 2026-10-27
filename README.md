@@ -1,98 +1,142 @@
 # SWARMS — enjambre
 
-Un modelo planifica y reparte; muchos baratos ejecutan en paralelo; un juez de
-centavos revisa. Es un comando: sirve desde tu terminal, Claude Code o Codex.
+One model plans. Many cheap models write in parallel. A cheap judge checks.
+It is one command. You can use it from a terminal, from Claude Code, or from Codex.
 
-## Usarlo
+**Main use:** Claude Code on Opus plans the work, and a DeepSeek swarm writes the code.
+Opus tokens go to decisions. DeepSeek tokens go to volume. A Claude Pro plan lasts much longer.
+
+## Install (macOS, Linux, WSL)
+
+You need a DeepSeek API key from <https://platform.deepseek.com>.
 
 ```bash
-echo "OPENROUTER_API_KEY=sk-or-v1-..." > .env     # en tu carpeta de trabajo
-uvx --from git+https://github.com/zsoist/SWARMS enjambre "escribe la documentación de este proyecto"
-uvx --from git+https://github.com/zsoist/SWARMS enjambre-visor    # localhost:8777
+curl -fsSL https://raw.githubusercontent.com/zsoist/SWARMS/main/instalar.sh | bash
 ```
 
-Lee `.env` y escribe `runs/<fecha>-swarm/` en la carpeta donde lo corres (o en
-`ENJAMBRE_DIR`): cada entregable en `artifacts/`, el ensamblado en `FINAL.md`.
+The installer:
 
-| Modo | Para qué |
+1. Installs `uv` if it is missing.
+2. Installs the `enjambre` command.
+3. Keeps your key in `~/.enjambre.env` (mode 600, only you can read it).
+4. Installs the `enjambre` skill in `~/.claude/skills/` and a short rule in `~/.claude/CLAUDE.md`.
+5. Sets Claude Code to Opus with medium effort, if no model is set.
+6. Makes one test call (`enjambre --check`).
+
+You can run it again. Each step is safe to repeat. Step-by-step guide for a new user: [`START.md`](START.md).
+
+## How it works
+
+```
+You ──▶ Claude Code (Opus)                 plans, checks, connects the parts
+            │ writes .enjambre/plan.json
+            ▼
+        enjambre --plan                    DeepSeek workers, up to 12 at the same time
+            │ writes runs/<date>-swarm/artifacts/
+            ▼
+        Claude Code copies the files (cp), runs tsc / build, fixes small errors
+```
+
+The skill [`kit/skills/enjambre/SKILL.md`](kit/skills/enjambre/SKILL.md) tells Claude when to use the swarm and how to write the plan.
+
+## Commands
+
+| Command | What it does |
 |---|---|
-| `enjambre "reto"` | el planificador arma el DAG de tareas |
-| `enjambre --plan plan.json` | tú escribes el DAG (ver `ejemplos/plan_ejemplo.json`) |
-| `enjambre --resume runs/<dir>` | retomar una corrida cortada |
-| `enjambre --demo` | prueba de 1 minuto |
-| `enjambre --help` | todo esto, con la flota que quedó configurada |
+| `enjambre "task"` | The brain model makes the plan (a DAG of tasks), then the workers do it. |
+| `enjambre --plan plan.json` | You (or your agent) write the plan. The workers only do it. |
+| `enjambre --resume runs/<dir>` | Continue a run that stopped. |
+| `enjambre --demo` | A one-minute test. |
+| `enjambre --check` | One small call. It confirms the key and the fleet. |
+| `enjambre --help` | All of this, with the fleet that is set now. |
+| `enjambre-visor` | A dashboard on `localhost:8777`. |
 
-Desde un agente: pídele que corra el comando y que lea `FINAL.md`. Con
-`--plan`, el agente que te atiende escribe el plan y el enjambre solo ejecuta.
+The command reads `.env` in the current folder, then `~/.enjambre.env`.
+It writes `runs/<date>-swarm/` in the current folder (or in `ENJAMBRE_DIR`).
+Each result is in `artifacts/`. `FINAL.md` has the assembled result or an index.
 
-## Con GLM (la flota por defecto), para que salga bien a la primera
-
-| Regla | Por qué (medido el 2026-09-23) |
-|---|---|
-| `"thinking": "none"` en las tareas del plan | GLM no deja apagar el razonamiento; "none" pide effort low. Con "medium" 7 de 8 workers volvieron vacíos |
-| `"ensamblar": false` si el entregable son los artefactos (JSON, código) | el ensamblado con el modelo grande tardaba 3 min y nadie leía `FINAL.md`; queda un índice |
-| Mira la línea `flota:` del final | dice qué modelo contestó y cuántas respuestas vinieron vacías. Si no es GLM o hay vacías, algo cambió |
-| `ENJAMBRE_OPENROUTER_KEY` si otra app usa la misma llave | el enjambre gasta de su llave; un día de enjambre le cerró el tope diario a un sitio público |
-| Los proveedores cambian: re-mide con `ejemplos/banco_proveedores.mjs` | la ruta está en `AFINADO` de `enjambre/nucleo.py` |
+## Plan format
 
 ```json
 {"task": "…", "ensamblar": false,
- "tasks": [{"id": "a", "prompt": "…", "deps": [], "filename": "a.json", "thinking": "none"}]}
+ "tasks": [{"id": "a", "prompt": "…", "deps": [], "filename": "a.ts",
+            "thinking": "none", "archivos": ["src/lib/db.ts"]}]}
 ```
 
-## Configuración (variables de entorno)
+| Field | Meaning |
+|---|---|
+| `filename` | One file name with its extension. The extension sets the checks. |
+| `deps` | Tasks whose result this task needs. A task without `deps` starts at once. |
+| `thinking` | `none` (mechanical), `low`, `medium`, `high`. More thinking costs more. |
+| `archivos` | Project files that the worker must see. The swarm reads them from disk. |
+| `ensamblar` | `false` when the result is code or data. No assembly step: faster and cheaper. |
 
-| Variable | Por defecto | Qué |
+## Fleets
+
+| `ENJAMBRE` | Workers | Brain | Key |
+|---|---|---|---|
+| `deepseek` | `deepseek-flash` | `deepseek-v4-pro` | `DEEPSEEK_API_KEY` |
+| `glm` | `z-ai/glm-5.3-flash` | `z-ai/glm-5.3` | `OPENROUTER_API_KEY` |
+
+If you do not set `ENJAMBRE`: with only a DeepSeek key, the fleet is `deepseek`. In all other cases it is `glm`.
+DeepSeek runs on its own API. If it fails and an OpenRouter key exists, the call goes to OpenRouter and the output says so.
+
+## Settings (environment variables)
+
+| Variable | Default | What |
 |---|---|---|
-| `ENJAMBRE` | `glm` | `glm`: `z-ai/glm-5.3-flash` + `z-ai/glm-5.3` · `deepseek`: `deepseek-flash` + `deepseek-v4-pro` |
-| `WORKER_MODEL` / `BRAIN_MODEL` | según la flota | cualquier modelo; con `/` va por OpenRouter |
-| `ENJAMBRE_PARALELO` | `12` | agentes en paralelo (probado con 20; `MAX_DEEPSEEK_AGENTS` sigue valiendo) |
-| `OPENROUTER_BUDGET_USD` / `DEEPSEEK_BUDGET_USD` | `10` / `10` | techo; al llegar se detiene solo |
-| `OR_MAX_PROMPT` / `OR_MAX_COMPLETION` | `1.0` / `3.0` | techo de precio por millón de tokens |
-| `JEV_MAX_CALLS` | `60` | llamadas al juez por corrida |
-| `ENJAMBRE_OPENROUTER_KEY` | — | llave propia del enjambre; gana sobre `OPENROUTER_API_KEY` |
-| `ENSAMBLAR` | `1` | `0` = no ensamblar (igual que `"ensamblar": false` en el plan) |
-| `GLM_PROVIDERS` / `GLM_BRAIN_PROVIDERS` | medidos | orden de proveedores de la tropa y del cerebro |
-| `GLM_MAX_TOKENS` / `GLM_BRAIN_MAX_TOKENS` | `24000` / `32000` | razonamiento + respuesta |
-| `GLM_HEDGE_S` | `150` | segundos antes de lanzar la petición de cobertura |
+| `ENJAMBRE` | see above | `deepseek` or `glm` |
+| `WORKER_MODEL` / `BRAIN_MODEL` | from the fleet | Any model. A name with `/` goes to OpenRouter. |
+| `ENJAMBRE_PARALELO` | `12` | Workers at the same time (tested with 20). `MAX_DEEPSEEK_AGENTS` also works. |
+| `DEEPSEEK_BUDGET_USD` / `OPENROUTER_BUDGET_USD` | `10` / `10` | Spend limit for each run. The run stops at the limit. |
+| `OR_MAX_PROMPT` / `OR_MAX_COMPLETION` | `1.0` / `3.0` | Price limit per million tokens (OpenRouter). |
+| `JEV_MAX_CALLS` | `60` | Judge calls for each run. The judge needs an OpenRouter key. |
+| `ENJAMBRE_OPENROUTER_KEY` | — | The swarm's own OpenRouter key. It wins over `OPENROUTER_API_KEY`. |
+| `ENSAMBLAR` | `1` | `0` = no assembly (same as `"ensamblar": false`). |
+| `GLM_PROVIDERS` / `GLM_BRAIN_PROVIDERS` | measured | Provider order for GLM workers and brain. |
+| `GLM_MAX_TOKENS` / `GLM_BRAIN_MAX_TOKENS` | `24000` / `32000` | Reasoning plus answer, for GLM. |
+| `GLM_HEDGE_S` | `150` | Seconds before a second (hedge) request to GLM. |
 
-Con la flota `glm` basta `OPENROUTER_API_KEY`. `DEEPSEEK_API_KEY` solo para `deepseek`.
+## Measured facts behind the code
 
-## Lo que está cableado, y el número detrás
-
-| Qué | Medido |
+| Rule | Measurement |
 |---|---|
-| Razonamiento explícito por modelo | GLM sin `effort` cuesta 3×, con `max` 7×. DeepSeek con `effort:"low"` devolvió 5/6 respuestas vacías; con `enabled:false`, 1/6 |
-| GLM de tropa por defecto | 0% de respuestas vacías contra 17% de DeepSeek Flash (4 tareas × 3) |
-| `require_parameters` | sin él, OpenRouter descarta en silencio lo que el proveedor no soporta |
-| GLM: techo de 24k tokens | con effort low razona 5–12k tokens en tareas largas; con techo de 8.192 `content` volvía vacío (cobrado igual) |
-| GLM tropa: CoreWeave, Parasail, Friendli, BaseTen; `sort: throughput` | CoreWeave 16–124 s, Parasail 40–81 s, Friendli 49–161 s; DeepInfra/Morph 677 s; Together contesta en 3 s sin razonar (lista vacía); Wafer razona hasta el techo sin contestar |
-| GLM cerebro con ruta propia: Baidu, Io Net, Novita, Inceptron, InferenceNet | CoreWeave no sirve `glm-5.3` y los de la tropa cobran $4,40/M (fuera del techo de precio). Planes válidos en 24–28 s; Phala 154 s y error |
-| Vacío = reintento con el mismo modelo y otro proveedor | antes el reintento iba fijo a `deepseek-flash`: pedías GLM y contestaba DeepSeek |
-| Razonamiento desbocado (`fin=length`) → el reintento acota `reasoning.max_tokens` (`GLM_RAZON_REINTENTO`, 8000) | con effort low GLM llegó a razonar 24.000 tokens sin contestar; subir el techo solo le daba más cuerda |
-| Compuerta determinista: `.json` parsea, `.py` compila, `.js` pasa `node --check`, `.yaml` carga | el juez no mira código ni datos, pero nada lo verificaba: 2 de 9 JSON rotos se shippearon. Si falla, reintento con el error exacto; `.json` además pide modo JSON al proveedor |
-| Cobertura (`GLM_HEDGE_S`, 150 s) y línea `llamadas:` | un worker en 336 s frenaba a 8 que terminaron en ≤91 s. Con cobertura y ruta medida: 9 workers en 138 s, 0 vacías, $0,057. El tiempo sigue al razonamiento (~110 tokens/s): 1.639 tokens → 22 s, 15.642 → 138 s |
-| Juez solo en prosa | acierta 8/8 en prosa, 2/5 en código, 1/10 en lotes de parches, 0/7 verificando datos. Decide la extensión del archivo |
-| Cercas de código fuera | los modelos envuelven el archivo en ```` ``` ```` aunque se les prohíba; sin quitarla, un `.js` no carga |
-| Nombres repetidos | dos tareas con el mismo archivo se pisaban; ahora la segunda lleva el id delante |
-| Paralelismo | 19,3 s por tarea con 1–2 tareas, 6,8 s con 10+; 33 tareas en 73 s |
+| DeepSeek: thinking off is `thinking: {type: disabled}` | The API turns thinking on (`high`) when you say nothing. `reasoning_effort: "none"` is not a valid value; it failed and sent all calls to OpenRouter. |
+| Thinking is set for each model | GLM with no `effort` costs 3×, with `max` 7×. DeepSeek with `effort: "low"` returned 5 of 6 empty answers; with thinking off, 1 of 6. |
+| An empty answer is never hidden | It goes to the `flota:` line and the swarm tries again with the same model (DeepSeek: with thinking off; GLM: on a different provider). |
+| `require_parameters` (OpenRouter) | Without it, OpenRouter drops parameters that the provider does not support, and it does not tell you. |
+| GLM: 24k token limit for workers | With effort low, GLM thinks 5–12k tokens on long tasks. With a limit of 8,192 the answer was empty, and it was billed. |
+| GLM workers: CoreWeave, Parasail, Friendli, BaseTen; `sort: throughput` | CoreWeave 16–124 s, Parasail 40–81 s, Friendli 49–161 s. DeepInfra/Morph 677 s. Together answers in 3 s with no reasoning (empty list). Wafer thinks to the limit and gives no answer. |
+| GLM brain has its own route | CoreWeave does not serve `glm-5.3`. The worker providers charge $4.40/M (above the price limit). Valid plans in 24–28 s. |
+| Runaway reasoning (`fin=length`) → the retry limits `reasoning.max_tokens` (`GLM_RAZON_REINTENTO`, 8000) | With effort low, GLM thought 24,000 tokens and gave no answer. A higher limit only gave it more room. |
+| Machine checks: `.json` parses, `.py` compiles, `.js` passes `node --check`, `.yaml` loads | The judge does not check code or data. Before this check, 2 of 9 broken JSON files shipped. On failure, the retry gets the exact error. `.json` also asks the provider for JSON mode. |
+| Hedge request (`GLM_HEDGE_S`, 150 s) and the `llamadas:` line | One worker took 336 s while 8 finished in 91 s or less. With the hedge and a measured route: 9 workers in 138 s, 0 empty, $0.057. |
+| Judge only for prose | Correct 8/8 on prose, 2/5 on code, 1/10 on patch batches, 0/7 on data checks. The file extension decides. |
+| Code fences are removed | Models wrap the file in ```` ``` ```` also when told not to. With the fence, a `.js` file does not load. |
+| Same file name twice | The second task gets its id in front of the name. Before, the second file replaced the first. |
+| Parallel work | 19.3 s per task with 1–2 tasks, 6.8 s with 10 or more. 33 tasks in 73 s. |
 
-No esperes caché de prefijo por OpenRouter: 0 tokens cacheados en todas las pruebas.
+Do not expect prefix cache through OpenRouter: 0 cached tokens in all tests. DeepSeek's own API caches the prefix automatically.
 
-## Cuánto cuesta
+## Cost
 
-`--demo` (5 entregables): 67 s, $0.0063. Cinco documentos largos: 153 s, $0.02.
+`--demo` (5 results): 67 s, $0.0063. Five long documents: 153 s, $0.02.
 
-## Si falla
+## Problems
 
-| Síntoma | Causa |
-|---|---|
-| `⛔ falta OPENROUTER_API_KEY en …/.env` | no hay `.env` en la carpeta donde corres el comando |
-| `flota: … ⚠️ N respuestas vacías` | el razonamiento se comió el techo en ese proveedor; se reintentó con otro. Si se repite, re-mide con `ejemplos/banco_proveedores.mjs` |
-| una corrida de minutos por tarea | un proveedor lento en la ruta: re-mide y ajusta `GLM_PROVIDERS` |
-| 429 | límite del proveedor: baja `ENJAMBRE_PARALELO` (la ruta ya cae a otro proveedor) |
+| Output | Cause | Action |
+|---|---|---|
+| `⛔ falta DEEPSEEK_API_KEY …` | No key in `.env` or `~/.enjambre.env`. | Run the installer again. |
+| `command not found: enjambre` | The tool folder is not on the PATH. | Run `uv tool update-shell`, then open a new terminal. |
+| `flota: … ⚠️ N respuestas vacías` | Reasoning used all the tokens. The swarm tried again. | No action if the files are there. If it repeats with GLM, measure again with `ejemplos/banco_proveedores.mjs`. |
+| `💸 Techo de … alcanzado` | The run reached its budget. | Increase `DEEPSEEK_BUDGET_USD` if this is correct. |
+| `401` or `402` from DeepSeek | Wrong key, or no balance. | Check <https://platform.deepseek.com>. |
+| `429` | Provider rate limit. | Decrease `ENJAMBRE_PARALELO`. |
 
-## Pruebas
+## Tests
 
-`uv run --with pytest pytest -q` — sin red; cubren lo que se rompió con GLM (reintentos a
-DeepSeek, techo corto, rutas cruzadas, ensamblado, `--help`, llave propia). Corren en cada push.
+```bash
+uv run --with pytest pytest -q
+```
+
+No network. The tests cover each bug that already happened (see `CLAUDE.md`). CI runs them on each push.

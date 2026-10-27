@@ -42,6 +42,10 @@ from openai import AsyncOpenAI
 # el paquete: ahí se leen .env y se escriben runs/. ENJAMBRE_DIR la fija.
 ROOT = Path(os.environ.get("ENJAMBRE_DIR", Path.cwd()))
 load_dotenv(ROOT / ".env")
+# Llave una vez para todos los proyectos: ~/.enjambre.env rellena lo que el
+# .env de la carpeta no trae (no lo pisa). Así un repo de Vercel/Supabase no
+# necesita la llave del enjambre en su propio .env.
+load_dotenv(Path.home() / ".enjambre.env")
 
 # agentes en paralelo. 12: con 8, un plan de 9 tareas dejaba una esperando turno.
 # MAX_DEEPSEEK_AGENTS es el nombre viejo (de cuando la tropa era DeepSeek).
@@ -126,7 +130,10 @@ budget = Budget()
 # DeepSeek flash gastaba su presupuesto de salida en razonamiento silencioso y
 # devolvía 17% de respuestas vacías; GLM con effort low gasta CERO tokens de
 # razonamiento y devolvió 0% de vacías, por un tercio del costo.
-ENJAMBRE = os.environ.get("ENJAMBRE", "glm").lower()
+# Sin ENJAMBRE explícito y con solo la llave de DeepSeek, la flota es DeepSeek:
+# quien instaló con su llave de DeepSeek no tiene que saber que existe GLM.
+_solo_ds = os.environ.get("DEEPSEEK_API_KEY") and not OR_KEY
+ENJAMBRE = os.environ.get("ENJAMBRE", "deepseek" if _solo_ds else "glm").lower()
 
 _FLOTAS = {
     # tropa (workers en paralelo) · cerebro (planificador y ensamblador)
@@ -284,7 +291,10 @@ async def llm(
     # intentarlo primero sólo gastaría un round-trip fallido por llamada.
     es_openrouter = "/" in model
     if thinking == "none":
-        extra_ds = {"reasoning_effort": "none"}
+        # API nativa (doc 2026-10): el razonamiento viene ENCENDIDO en high si no
+        # se dice nada, y se apaga con thinking.type=disabled. reasoning_effort
+        # solo acepta low/high/max: "none" era un 400 que caía a OpenRouter.
+        extra_ds = {"thinking": {"type": "disabled"}}
         # Para los slugs de OpenRouter no vale {"reasoning": {"enabled": False}}:
         # GLM lo rechaza con 400 "Reasoning is mandatory for this endpoint and
         # cannot be disabled.". Lo que SÍ funciona es effort "low"; si no se pide
@@ -295,7 +305,7 @@ async def llm(
             extra_or = {"reasoning": {"enabled": False}}
         temperature = 0.3
     else:
-        extra_ds = {"reasoning_effort": thinking}
+        extra_ds = {"thinking": {"type": "enabled"}, "reasoning_effort": thinking}
         extra_or = {"reasoning": {"effort": thinking}}
         temperature = 0.6  # recomendación paper R1 para modo razonamiento
     if es_openrouter:
@@ -362,15 +372,34 @@ async def llm(
             if VACIOS[-1]["provider"]:
                 prov["ignore"] = sorted(set(prov.get("ignore", [])) | {VACIOS[-1]["provider"]})
     else:
+        extra = {"response_format": {"type": "json_object"}} if formato == "json" else {}
         try:
-            r = await deepseek.chat.completions.create(
-                model=model, messages=messages, timeout=600,
-                temperature=temperature, extra_body=extra_ds,
-            )
-            budget.add("deepseek", model, r.usage)
+            for intento in range(2):
+                r = await deepseek.chat.completions.create(
+                    model=model, messages=messages, timeout=600,
+                    temperature=temperature, extra_body=extra_ds, **extra,
+                )
+                budget.add("deepseek", model, r.usage)
+                if (r.choices[0].message.content or "").strip():
+                    break
+                # Vacío: el razonamiento se comió la salida. Se registra y el
+                # reintento va al MISMO modelo con el razonamiento apagado.
+                det = getattr(r.usage, "completion_tokens_details", None)
+                VACIOS.append({"model": model, "provider": "deepseek",
+                               "finish": r.choices[0].finish_reason,
+                               "razonamiento": getattr(det, "reasoning_tokens", None) if det else None,
+                               "tokens": getattr(r.usage, "completion_tokens", None)})
+                print(f"  ⚠️  {model} devolvió vacío (fin={r.choices[0].finish_reason}); "
+                      f"reintento sin razonamiento")
+                extra_ds = {"thinking": {"type": "disabled"}}
         except RuntimeError:
             raise  # techo de presupuesto: no hacer fallback, parar
-        except Exception:
+        except Exception as e:
+            # Sin llave de OpenRouter no hay a dónde caer: el error real de
+            # DeepSeek vale más que un 401 de un servicio que no se usa.
+            if not OR_KEY:
+                raise
+            print(f"  ⚠️  DeepSeek falló ({repr(e)[:100]}); voy por OpenRouter")
             r = await openrouter.chat.completions.create(
                 model=OPENROUTER_EQUIV.get(model, f"deepseek/{model}"),
                 messages=messages, timeout=600, temperature=temperature,
@@ -443,6 +472,27 @@ def sin_cerca(texto: str, extension: str = "") -> str:
     if extension.lower() in (".md", ".markdown", ".txt") and texto.count("```") > 2:
         return texto          # hay más cercas dentro: son parte del contenido
     return m.group(1) + "\n"
+
+
+def leer_archivos(rutas, tope: int = 60_000) -> str:
+    """Contexto de la tarea leído del disco ("archivos" en el plan).
+
+    El orquestador (Opus en Claude Code) nombra los archivos en vez de pegarlos
+    en el prompt: pegarlos es salida del modelo caro; leerlos aquí es gratis y
+    la tropa los paga a precio de entrada barata.
+    """
+    partes, usado = [], 0
+    for ruta in rutas or []:
+        p = Path(ruta) if Path(ruta).is_absolute() else ROOT / ruta
+        try:
+            texto = p.read_text(errors="replace")
+        except OSError as e:
+            partes.append(f"[archivo {ruta}: no se pudo leer ({e.strerror})]")
+            continue
+        texto = texto[: max(0, tope - usado)]
+        usado += len(texto)
+        partes.append(f"[archivo {ruta}]\n{texto}")
+    return "\n\n".join(partes) + "\n\n" if partes else ""
 
 
 def extract_json(text: str) -> dict:
@@ -676,7 +726,9 @@ async def jev_review(task_prompt: str, output: str, filename: str = ""):
         # no es un fallo: es una decisión. El visor muestra el motivo para que
         # el usuario entienda por qué esta tarea no tiene veredicto.
         return {"sin_juez": True, "motivo": motivo}
-    if not jev_budget_ok():
+    # Jev vive en OpenRouter: con solo la llave de DeepSeek no hay juez, y una
+    # petición con "Bearer None" era un 401 seguro por tarea.
+    if not OR_KEY or not jev_budget_ok():
         return None
     try:
         import httpx
@@ -877,7 +929,7 @@ class Swarm:
         context = "\n\n".join(
             f"[insumo de {d}]\n{self.results[d][:2000]}" for d in t.get("deps", [])
         )
-        prompt = (context + "\n\n" if context else "") + t["prompt"]
+        prompt = (context + "\n\n" if context else "") + leer_archivos(t.get("archivos")) + t["prompt"]
         think = str(t.get("thinking", "none")).strip().lower()
         if think not in THINK_UP:
             think = "none"
@@ -1097,13 +1149,15 @@ AYUDA = f"""enjambre — un cerebro planifica, una tropa barata ejecuta en paral
   enjambre --plan plan.json       tú (o tu agente) escribes el plan; la tropa ejecuta
   enjambre --resume runs/<dir>    retoma una corrida cortada
   enjambre --demo                 prueba de un minuto
+  enjambre --check                una llamada: confirma llave y flota (centavos de centavo)
 
 Plan: {{"task": "...", "ensamblar": false, "tasks": [{{"id", "prompt", "deps", "filename", "thinking"}}]}}
   thinking "none" con GLM (effort low): con "medium" la tropa gastaba el techo pensando.
   "ensamblar": false si los entregables son los artefactos (JSON, código): ahorra el ensamblado.
 
 Flota: {{ENJAMBRE}}={ENJAMBRE} · tropa {WORKER_MODEL} · cerebro {BRAIN_MODEL}
-Llave: ENJAMBRE_OPENROUTER_KEY (propia) o OPENROUTER_API_KEY, en .env de la carpeta.
+Llaves: .env de la carpeta, luego ~/.enjambre.env. DEEPSEEK_API_KEY sola → flota deepseek.
+  OpenRouter: ENJAMBRE_OPENROUTER_KEY (propia) u OPENROUTER_API_KEY.
 Al final mira la línea "flota:": dice qué modelo contestó y cuántas respuestas vinieron vacías."""
 
 
@@ -1113,6 +1167,18 @@ def cli():
         print(AYUDA)
         sys.exit(0 if len(sys.argv) >= 2 else 2)
     _exigir_llaves()
+    if sys.argv[1] == "--check":
+        # Una llamada mínima: confirma llave, flota y ruta antes de gastar en serio.
+        t0 = time.monotonic()
+        try:
+            out = asyncio.run(llm("Reply with one word: ok", thinking="none"))
+        except Exception as e:
+            # Una línea, no un traceback: quien instala necesita la causa, no la pila.
+            sys.exit(f"⛔ {WORKER_MODEL}: {str(e)[:300]}")
+        ok = bool(out.strip())
+        print(f"{'✅' if ok else '⛔'} {WORKER_MODEL} → {out.strip()[:40]!r} "
+              f"({time.monotonic() - t0:.1f} s · {budget.line()})")
+        sys.exit(0 if ok else 1)
     if sys.argv[1] == "--plan":
         # Plan autorado por Fable (Claude Code): los workers ejecutan tal cual.
         # No loggear aquí: fuera del event loop el beam a Supabase se pierde;
