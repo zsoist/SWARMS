@@ -87,9 +87,9 @@ Do the work yourself for:
 
 ### Rules for the plan
 
-- **One file for each task.** `filename` is only a file name, with the correct extension. The swarm does not make folders.
+- **One file for each task.** `filename` is only a file name, with the correct extension. If you write a path, the swarm keeps only the name.
 - **Make each prompt complete.** A worker does not see the project. It sees only its prompt, its `archivos`, and the first 2000 characters of each task in `deps`.
-- **Use `archivos` for context.** List the project files that the worker must see. The swarm reads them from disk. Do not paste file contents into the prompt: that costs Opus tokens.
+- **Use `archivos` for context.** List the project files that the worker must see, relative to the project root. The swarm reads them from disk. A missing file shows `⚠️` in the summary: then fix the path and run that task again. Do not paste file contents into the prompt: that costs Opus tokens.
 - **Give exact names.** Write the path, the exports, the types, the table names, and the libraries in the prompt.
 - **Add `deps` only for real inputs.** Tasks without `deps` run at the same time (up to 12).
 - **Set `thinking` for each task:**

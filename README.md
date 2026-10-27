@@ -51,8 +51,10 @@ The skill [`kit/skills/enjambre/SKILL.md`](kit/skills/enjambre/SKILL.md) tells C
 | `enjambre --help` | All of this, with the fleet that is set now. |
 | `enjambre-visor` | A dashboard on `localhost:8777`. |
 
-The command reads `.env` in the current folder, then `~/.enjambre.env`.
-It writes `runs/<date>-swarm/` in the current folder (or in `ENJAMBRE_DIR`).
+Keys and settings: the command reads `~/.enjambre.env` and the `.env` of the current folder.
+For the swarm's own settings (`DEEPSEEK_*`, `ENJAMBRE*`), `~/.enjambre.env` wins over a project `.env`.
+A value exported in the terminal wins over both.
+It writes `runs/<date>-swarm/` in the project folder. With `--plan .enjambre/plan.json`, the project folder is the folder above `.enjambre/`, also when the shell is in a subfolder.
 Each result is in `artifacts/`. `FINAL.md` has the assembled result or an index.
 
 ## Plan format
@@ -79,7 +81,8 @@ Each result is in `artifacts/`. `FINAL.md` has the assembled result or an index.
 | `glm` | `z-ai/glm-5.3-flash` | `z-ai/glm-5.3` | `OPENROUTER_API_KEY` |
 
 If you do not set `ENJAMBRE`: with only a DeepSeek key, the fleet is `deepseek`. In all other cases it is `glm`.
-DeepSeek runs on its own API. If it fails and an OpenRouter key exists, the call goes to OpenRouter and the output says so.
+DeepSeek runs on its own API. It goes to OpenRouter only when it fails with a server error and `ENJAMBRE_OPENROUTER_KEY` exists. The output says so.
+It never uses the `OPENROUTER_API_KEY` of a project `.env`: that key belongs to the app.
 
 ## Settings (environment variables)
 

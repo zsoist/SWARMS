@@ -33,6 +33,11 @@ node ejemplos/banco_proveedores.mjs <model> <prompt.txt> <prov...>   # measure r
 - **DeepSeek JSON mode needs the word "json" in the prompt.** Without it: 400. `llm()` adds it.
 - **A cut answer is a failure.** Set `max_tokens` (DeepSeek default: 8K without thinking).
   `finish_reason` `length`, `insufficient_system_resource`, or `aborted` → record in `VACIOS` and retry with more.
+- **`~/.enjambre.env` wins over a project `.env`** for `DEEPSEEK_*` and `ENJAMBRE*`. An app's old
+  `DEEPSEEK_API_KEY` was used silently. The terminal still wins over both.
+- **The DeepSeek fleet uses only `ENJAMBRE_OPENROUTER_KEY`** for fallback and judge, never an app's `OPENROUTER_API_KEY`.
+- **`--plan`: the project root comes from the plan path** (`.enjambre/plan.json` → its parent folder).
+  Flatten `filename` to its name when the plan loads. Missing `archivos` print ⚠️ and go to the summary.
 - **Stop the run on 401/402** (wrong key, no balance). Never send 400/422 to OpenRouter: they fail there too.
 - **High token limit for GLM** (it thinks also with effort low): 24k for workers, 32k for the brain.
   With 8,192 the `content` came back empty, and it was billed.

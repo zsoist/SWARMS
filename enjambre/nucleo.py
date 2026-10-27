@@ -35,17 +35,25 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 from openai import AsyncOpenAI
 
 # La carpeta de trabajo es donde corres el comando, no donde quedó instalado
 # el paquete: ahí se leen .env y se escriben runs/. ENJAMBRE_DIR la fija.
 ROOT = Path(os.environ.get("ENJAMBRE_DIR", Path.cwd()))
+_DIR_FIJO = "ENJAMBRE_DIR" in os.environ
+_antes = set(os.environ)
 load_dotenv(ROOT / ".env")
-# Llave una vez para todos los proyectos: ~/.enjambre.env rellena lo que el
-# .env de la carpeta no trae (no lo pisa). Así un repo de Vercel/Supabase no
-# necesita la llave del enjambre en su propio .env.
-load_dotenv(Path.home() / ".enjambre.env")
+_del_proyecto = set(os.environ) - _antes
+# Llave una vez para todos los proyectos: ~/.enjambre.env. Sus claves del
+# enjambre (DEEPSEEK_*, ENJAMBRE*) GANAN sobre el .env de un proyecto: una app
+# de Next.js con una DEEPSEEK_API_KEY vieja en su .env usaba esa en silencio.
+# Lo exportado en la terminal sigue ganando a todo.
+_GLOBAL = Path.home() / ".enjambre.env"
+for _k, _v in dotenv_values(_GLOBAL).items():
+    _del_enjambre = _k.startswith("DEEPSEEK_") or (_k.startswith("ENJAMBRE") and _k != "ENJAMBRE_DIR")
+    if _v and (_k not in os.environ or (_del_enjambre and _k in _del_proyecto)):
+        os.environ[_k] = _v
 
 # agentes en paralelo. 12: con 8, un plan de 9 tareas dejaba una esperando turno.
 # MAX_DEEPSEEK_AGENTS es el nombre viejo (de cuando la tropa era DeepSeek).
@@ -68,6 +76,9 @@ deepseek = AsyncOpenAI(
 # llave y no le come el tope diario a otra app que use OPENROUTER_API_KEY
 # (el 2026-09-23 un día de enjambre cerró un sitio público que la compartía).
 OR_KEY = os.environ.get("ENJAMBRE_OPENROUTER_KEY") or os.environ.get("OPENROUTER_API_KEY")
+# Para la flota DeepSeek, OpenRouter (respaldo y juez) solo con la llave PROPIA del
+# enjambre: la OPENROUTER_API_KEY del .env de una app es de la app, no nuestra.
+OR_PROPIA = os.environ.get("ENJAMBRE_OPENROUTER_KEY")
 openrouter = AsyncOpenAI(
     api_key=OR_KEY or "falta-OPENROUTER_API_KEY",
     base_url=os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
@@ -433,12 +444,15 @@ async def llm(
                 raise
             # 401/402 (llave mala, sin saldo) sin OpenRouter: parar la misión
             # entera con la causa, no fallar tarea por tarea.
-            if codigo in (401, 402) and not OR_KEY:
-                causa = "llave inválida" if codigo == 401 else "sin saldo en platform.deepseek.com"
+            # 401/402 (llave mala, sin saldo): parar la misión entera con la
+            # causa. Nunca caer a OpenRouter aquí: taparía la llave mala.
+            if codigo in (401, 402):
+                causa = ("llave inválida: revisa ~/.enjambre.env" if codigo == 401
+                         else "sin saldo: recarga en platform.deepseek.com")
                 raise RuntimeError(f"⛔ DeepSeek {codigo}: {causa}") from e
-            # Sin llave de OpenRouter no hay a dónde caer: el error real de
-            # DeepSeek vale más que un 401 de un servicio que no se usa.
-            if not OR_KEY:
+            # Sin llave propia de OpenRouter no hay a dónde caer: el error real
+            # de DeepSeek vale más que gastar la llave de otra app.
+            if not OR_PROPIA:
                 raise
             print(f"  ⚠️  DeepSeek falló ({repr(e)[:100]}); voy por OpenRouter")
             r = await openrouter.chat.completions.create(
@@ -515,6 +529,9 @@ def sin_cerca(texto: str, extension: str = "") -> str:
     return m.group(1) + "\n"
 
 
+FALTANTES: list[str] = []   # archivos del plan que no estaban en disco
+
+
 def leer_archivos(rutas, tope: int = 60_000) -> str:
     """Contexto de la tarea leído del disco ("archivos" en el plan).
 
@@ -528,6 +545,9 @@ def leer_archivos(rutas, tope: int = 60_000) -> str:
         try:
             texto = p.read_text(errors="replace")
         except OSError as e:
+            # Se dice fuerte: sin el archivo, el worker inventa su contenido.
+            FALTANTES.append(str(ruta))
+            print(f"  ⚠️  no encuentro {p}: la tarea sigue sin ese contexto")
             partes.append(f"[archivo {ruta}: no se pudo leer ({e.strerror})]")
             continue
         texto = texto[: max(0, tope - usado)]
@@ -769,14 +789,15 @@ async def jev_review(task_prompt: str, output: str, filename: str = ""):
         return {"sin_juez": True, "motivo": motivo}
     # Jev vive en OpenRouter: con solo la llave de DeepSeek no hay juez, y una
     # petición con "Bearer None" era un 401 seguro por tarea.
-    if not OR_KEY or not jev_budget_ok():
+    llave_jev = OR_KEY if "/" in WORKER_MODEL else OR_PROPIA
+    if not llave_jev or not jev_budget_ok():
         return None
     try:
         import httpx
         async with httpx.AsyncClient(timeout=30) as c:
             r = await c.post(
                 "https://openrouter.ai/api/alpha/decisions",
-                headers={"Authorization": f"Bearer {OR_KEY}"},
+                headers={"Authorization": f"Bearer {llave_jev}"},
                 json={
                     "model": JEV_MODEL,
                     "state": f"Tarea encargada:\n{task_prompt[:4000]}\n\n"
@@ -1087,6 +1108,9 @@ class Swarm:
         vistos = set()
         for t in tasks:
             nombre = Path(t.get("filename") or f"{t['id']}.md").name
+            # el artefacto se escribe con el nombre plano: si el plan dice
+            # "src/app/page.tsx", el resumen mostraba una ruta que no existía
+            t["filename"] = nombre
             if nombre.lower() in vistos:
                 nuevo = f"{t['id']}-{nombre}"
                 print(f"⚠️  {t['id']}: «{nombre}» ya lo escribe otra tarea → {nuevo}")
@@ -1159,6 +1183,8 @@ class Swarm:
             cub = sum(x["cubierta"] for x in LLAMADAS)
             print(f"   llamadas: {len(LLAMADAS)} · mediana {ts[len(ts) // 2]:.0f} s · la más lenta "
                   f"{lenta['s']:.0f} s vía {lenta['provider']}" + (f" · {cub} con cobertura" if cub else ""))
+        if FALTANTES:
+            print(f"   ⚠️ archivos del plan que no existen (revisa esas tareas): {', '.join(sorted(set(FALTANTES)))}")
         self.log({"event": "flota", "worker": WORKER_MODEL, "vacios": VACIOS, "llamadas": LLAMADAS})
         for tid in self.results:
             j = jevs.get(tid)
@@ -1183,7 +1209,7 @@ def _exigir_llaves():
     if usa_ds and not os.environ.get("DEEPSEEK_API_KEY"):
         faltan.append("DEEPSEEK_API_KEY")
     if faltan:
-        sys.exit(f"⛔ falta {', '.join(faltan)} en {ROOT / '.env'} "
+        sys.exit(f"⛔ falta {', '.join(faltan)} en {_GLOBAL} (o en {ROOT / '.env'}) "
                  f"(flota «{ENJAMBRE}»: {WORKER_MODEL} + {BRAIN_MODEL})")
 
 
@@ -1227,9 +1253,26 @@ def cli():
         # Plan autorado por Fable (Claude Code): los workers ejecutan tal cual.
         # No loggear aquí: fuera del event loop el beam a Supabase se pierde;
         # run() lo loggea porque plan_needs_log queda en True.
-        spec = json.loads(Path(sys.argv[2]).read_text())
+        global ROOT
+        try:
+            ruta = Path(sys.argv[2]).resolve()
+            spec = json.loads(ruta.read_text())
+            tareas = spec["tasks"]
+            assert isinstance(tareas, list) and tareas, "\"tasks\" está vacío"
+            for i, t in enumerate(tareas):
+                assert isinstance(t, dict) and t.get("id") and t.get("prompt"), \
+                    f"la tarea #{i + 1} necesita \"id\" y \"prompt\""
+        except IndexError:
+            sys.exit("⛔ uso: enjambre --plan .enjambre/plan.json")
+        except (OSError, json.JSONDecodeError, KeyError, AssertionError) as e:
+            sys.exit(f"⛔ plan inválido ({sys.argv[2]}): {e}")
+        # La raíz del proyecto sale del plan, no de la carpeta actual: si el
+        # shell de Claude quedó en una subcarpeta, "archivos" no se encontraban
+        # y runs/ caía donde no era. .enjambre/plan.json → la carpeta de arriba.
+        if not _DIR_FIJO:
+            ROOT = ruta.parent.parent if ruta.parent.name == ".enjambre" else ruta.parent
         s = Swarm(spec.get("task", "plan externo"), plan_externo=True)
-        s.cached_plan = spec["tasks"]
+        s.cached_plan = tareas
         if spec.get("ensamblar") is False:
             s.ensamblar = False
         s.plan_needs_log = True

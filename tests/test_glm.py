@@ -27,6 +27,7 @@ def nucleo(tmp_path, monkeypatch):
     import enjambre.nucleo as n
     n.VACIOS.clear()
     n.LLAMADAS.clear()
+    n.FALTANTES.clear()
     return n
 
 
@@ -443,3 +444,100 @@ def test_plan_externo_con_titulo_corto_corre(nucleo, monkeypatch, tmp_path):
     with pytest.raises(SystemExit) as fin:
         nucleo.cli()
     assert fin.value.code == 0
+
+
+# ── Revisión 2026-10-27: tropiezos de un usuario nuevo ────────────────────────
+
+def _importar(env, cwd=RAIZ):
+    code = ("import enjambre.nucleo as n, os; "
+            "print(os.environ.get('DEEPSEEK_API_KEY'), n.ENJAMBRE, bool(n.OR_PROPIA))")
+    base = {k: v for k, v in os.environ.items()
+            if not k.startswith(("ENJAMBRE", "DEEPSEEK", "OPENROUTER", "WORKER", "BRAIN"))}
+    base.update(env)
+    r = subprocess.run([sys.executable, "-c", code], cwd=cwd, env=base, capture_output=True, text=True, timeout=60)
+    return r.stdout.strip() or r.stderr
+
+
+def test_llave_global_gana_al_env_de_la_app(tmp_path):
+    casa, app = tmp_path / "casa", tmp_path / "app"
+    casa.mkdir(); app.mkdir()
+    (casa / ".enjambre.env").write_text("DEEPSEEK_API_KEY=sk-buena\nENJAMBRE=deepseek\n")
+    (app / ".env").write_text("DEEPSEEK_API_KEY=sk-vieja\nOPENROUTER_API_KEY=sk-or-de-la-app\n")
+    # la llave vieja de la app no gana, y la de OpenRouter de la app no es "propia"
+    assert _importar({"HOME": str(casa), "ENJAMBRE_DIR": str(app)}) == "sk-buena deepseek False"
+
+
+def test_lo_exportado_en_la_terminal_gana_a_todo(tmp_path):
+    casa = tmp_path / "casa"; casa.mkdir()
+    (casa / ".enjambre.env").write_text("DEEPSEEK_API_KEY=sk-archivo\n")
+    out = _importar({"HOME": str(casa), "ENJAMBRE_DIR": str(tmp_path), "DEEPSEEK_API_KEY": "sk-terminal"})
+    assert out.startswith("sk-terminal")
+
+
+def test_deepseek_401_nunca_cae_a_openrouter(nucleo_ds, monkeypatch):
+    monkeypatch.setattr(nucleo_ds, "OR_PROPIA", "sk-or-v1-propia")
+
+    async def falla(**kw):
+        raise _ErrorHttp(401)
+
+    async def no_debia(**kw):
+        raise AssertionError("taparía la llave mala")
+
+    monkeypatch.setattr(nucleo_ds.deepseek.chat.completions, "create", falla)
+    monkeypatch.setattr(nucleo_ds.openrouter.chat.completions, "create", no_debia)
+    with pytest.raises(RuntimeError, match="401"):
+        asyncio.run(nucleo_ds.llm("x"))
+
+
+def test_filename_con_carpetas_se_aplana_en_el_resumen(nucleo, monkeypatch, capsys):
+    async def llm(*a, **k):
+        return "export default function Page() { return null }\n" * 3
+
+    monkeypatch.setattr(nucleo, "llm", llm)
+    s = nucleo.Swarm("pagina de precios de la app")
+    s.cached_plan = [{"id": "a", "prompt": "p", "deps": [], "filename": "src/app/pricing/page.tsx"}]
+    s.ensamblar = False
+    asyncio.run(s.run())
+    salida = capsys.readouterr().out
+    assert (s.ship_dir / "page.tsx").exists()
+    assert "artifacts/page.tsx" in salida and "artifacts/src/" not in salida
+
+
+def test_plan_desde_subcarpeta_usa_la_raiz_del_proyecto(nucleo, monkeypatch, tmp_path):
+    proyecto = tmp_path / "app"
+    (proyecto / ".enjambre").mkdir(parents=True)
+    (proyecto / "src").mkdir()
+    (proyecto / "src" / "db.ts").write_text("export const db = 1")
+    (proyecto / ".enjambre" / "plan.json").write_text(json.dumps(
+        {"task": "t", "ensamblar": False,
+         "tasks": [{"id": "a", "prompt": "usa db", "filename": "a.json", "archivos": ["src/db.ts", "src/no.ts"]}]}))
+    vistos = []
+
+    async def llm(prompt, **k):
+        vistos.append(prompt)
+        return json.dumps({"ok": True}) + " " * 100
+
+    monkeypatch.setattr(nucleo, "llm", llm)
+    monkeypatch.setattr(nucleo, "_DIR_FIJO", False)
+    monkeypatch.chdir(proyecto / "src")                       # el shell quedó en una subcarpeta
+    monkeypatch.setattr(sys, "argv", ["enjambre", "--plan", str(proyecto / ".enjambre" / "plan.json")])
+    with pytest.raises(SystemExit):
+        nucleo.cli()
+    assert "export const db = 1" in vistos[0]
+    assert (proyecto / "runs").is_dir()
+    assert "src/no.ts" in nucleo.FALTANTES
+
+
+@pytest.mark.parametrize("contenido, pista", [
+    (None, "plan inválido"),
+    ("{no es json", "plan inválido"),
+    ('{"tasks": [{"prompt": "sin id"}]}', "necesita"),
+])
+def test_plan_malo_da_una_linea_no_un_traceback(nucleo, monkeypatch, tmp_path, contenido, pista):
+    plan = tmp_path / "plan.json"
+    if contenido is not None:
+        plan.write_text(contenido)
+    monkeypatch.setattr(sys, "argv", ["enjambre", "--plan", str(plan)])
+    with pytest.raises(SystemExit) as fin:
+        nucleo.cli()
+    assert pista in str(fin.value.code)
