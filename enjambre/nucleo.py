@@ -543,7 +543,7 @@ def leer_archivos(rutas, tope: int = 60_000) -> str:
     for ruta in rutas or []:
         p = Path(ruta) if Path(ruta).is_absolute() else ROOT / ruta
         try:
-            texto = p.read_text(errors="replace")
+            texto = p.read_text(encoding="utf-8", errors="replace")
         except OSError as e:
             # Se dice fuerte: sin el archivo, el worker inventa su contenido.
             FALTANTES.append(str(ruta))
@@ -615,10 +615,10 @@ def compuerta(filename: str | None, texto: str) -> str | None:
             # con import/export se revisa como módulo: si no, un .js de navegador
             # válido fallaría como CommonJS
             modulo = ext == ".mjs" or re.search(r"^\s*(import|export)\b", t, re.M)
-            with tempfile.NamedTemporaryFile("w", suffix=".mjs" if modulo else ".js", delete=False) as f:
+            with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".mjs" if modulo else ".js", delete=False) as f:
                 f.write(t)
             try:
-                r = subprocess.run(["node", "--check", f.name], capture_output=True, text=True, timeout=30)
+                r = subprocess.run(["node", "--check", f.name], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
             finally:
                 os.unlink(f.name)
             if r.returncode != 0:
@@ -869,7 +869,7 @@ class Swarm:
         self.cached_plan: list | None = None
         jl = self.run_dir / "swarm.jsonl"
         if resume_dir and jl.exists():
-            for line in jl.read_text().splitlines():
+            for line in jl.read_text(encoding="utf-8").splitlines():
                 try:
                     ev = json.loads(line)
                 except json.JSONDecodeError:
@@ -882,7 +882,7 @@ class Swarm:
 
     def log(self, obj):
         obj = {"t": round(time.time(), 3), **obj}
-        with (self.run_dir / "swarm.jsonl").open("a") as f:
+        with (self.run_dir / "swarm.jsonl").open("a", encoding="utf-8") as f:
             f.write(json.dumps(obj, ensure_ascii=False) + "\n")
         self._beam(obj)
 
@@ -956,7 +956,7 @@ class Swarm:
         path = self.ship_dir / Path(filename or f"{tid}.md").name  # sin rutas del planner
         content = sin_cerca(content, path.suffix)
         tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(content)
+        tmp.write_text(content, encoding="utf-8")
         os.replace(tmp, path)
         print(f"  📦 [{time.monotonic()-self.t0:5.1f}s] {tid} shippeado → {path.name}")
 
@@ -981,7 +981,7 @@ class Swarm:
         # Rama ya shippeada en una corrida anterior: reusar, no re-correr.
         prior = self.ship_dir / (t.get("filename") or f"{t['id']}.md")
         if prior.exists():
-            self.results[t["id"]] = prior.read_text()
+            self.results[t["id"]] = prior.read_text(encoding="utf-8")
             print(f"  ♻️  {t['id']} recuperado del checkpoint ({prior.name})")
             self.done_events[t["id"]].set()
             return
@@ -1138,7 +1138,7 @@ class Swarm:
             # artefactos (JSON, código) el ensamblado tardaba 3 min y nadie lo leía.
             indice = "\n".join(f"- `{self.ship_dir / (t.get('filename') or t['id'] + '.md')}` — {t.get('titulo') or t['id']}"
                                for t in tasks)
-            (self.run_dir / "FINAL.md").write_text(f"# {self.task}\n\nSin ensamblar (\"ensamblar\": false). Entregables:\n\n{indice}\n")
+            (self.run_dir / "FINAL.md").write_text(f"# {self.task}\n\nSin ensamblar (\"ensamblar\": false). Entregables:\n\n{indice}\n", encoding="utf-8")
             print("📋 Sin ensamblar: FINAL.md es el índice de los entregables")
             await self._resumen(tasks)
             return
@@ -1149,7 +1149,7 @@ class Swarm:
                 + "\n\n".join(f"## {k}\n{v[:3000]}" for k, v in self.results.items())
             )
             tmp = self.run_dir / "FINAL.md.tmp"
-            tmp.write_text(final)
+            tmp.write_text(final, encoding="utf-8")
             os.replace(tmp, self.run_dir / "FINAL.md")  # atómico: exists() es la señal de resume
         except Exception as e:
             # ship-first hasta el final: las piezas YA están en artifacts/; un
@@ -1165,7 +1165,7 @@ class Swarm:
                   "spent": budget.spent, "tasks": len(self.results)})
         # Parte final: "listo, aquí está lo que pediste"
         jevs = {}
-        for l in (self.run_dir / "swarm.jsonl").open():
+        for l in (self.run_dir / "swarm.jsonl").open(encoding="utf-8"):
             try:
                 e = json.loads(l)
             except json.JSONDecodeError:
@@ -1233,6 +1233,13 @@ Al final mira la línea "flota:": dice qué modelo contestó y cuántas respuest
 
 def cli():
     """Punto de entrada del comando `enjambre`."""
+    # Windows: con la salida en tubería (Claude corre `enjambre ... | tail`) Python
+    # usa cp1252 y el primer ✅ revienta con UnicodeEncodeError. UTF-8 siempre.
+    for flujo in (sys.stdout, sys.stderr):
+        try:
+            flujo.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help", "ayuda"):
         print(AYUDA)
         sys.exit(0 if len(sys.argv) >= 2 else 2)
@@ -1256,7 +1263,7 @@ def cli():
         global ROOT
         try:
             ruta = Path(sys.argv[2]).resolve()
-            spec = json.loads(ruta.read_text())
+            spec = json.loads(ruta.read_text(encoding="utf-8"))
             tareas = spec["tasks"]
             assert isinstance(tareas, list) and tareas, "\"tasks\" está vacío"
             for i, t in enumerate(tareas):

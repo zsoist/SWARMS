@@ -20,6 +20,7 @@ RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 def nucleo(tmp_path, monkeypatch):
     monkeypatch.setenv("ENJAMBRE_DIR", str(tmp_path))
     monkeypatch.setenv("HOME", str(tmp_path))          # que ~/.enjambre.env del que corre no se cuele
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))     # Windows: Path.home() lee USERPROFILE
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-prueba")
     for v in ("SUPABASE_URL", "ENJAMBRE", "WORKER_MODEL", "BRAIN_MODEL", "ENJAMBRE_OPENROUTER_KEY", "ENSAMBLAR", "ENJAMBRE_PARALELO", "MAX_DEEPSEEK_AGENTS"):
         monkeypatch.delenv(v, raising=False)
@@ -246,6 +247,7 @@ def test_razonamiento_desbocado_se_acota_en_el_reintento(nucleo, monkeypatch):
 def nucleo_ds(tmp_path, monkeypatch):
     monkeypatch.setenv("ENJAMBRE_DIR", str(tmp_path))
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))     # Windows: Path.home() lee USERPROFILE
     monkeypatch.setenv("ENJAMBRE", "deepseek")
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-prueba")
     for v in ("SUPABASE_URL", "WORKER_MODEL", "BRAIN_MODEL", "OPENROUTER_API_KEY", "ENJAMBRE_OPENROUTER_KEY"):
@@ -306,7 +308,7 @@ def test_llave_global_en_el_home(tmp_path):
     (casa / ".enjambre.env").write_text("ENJAMBRE=deepseek\nDEEPSEEK_API_KEY=sk-global\n")
     code = "import enjambre.nucleo as n, os; print(n.WORKER_MODEL, os.environ['DEEPSEEK_API_KEY'])"
     env = {k: v for k, v in os.environ.items() if not k.startswith(("ENJAMBRE", "DEEPSEEK", "WORKER", "BRAIN"))}
-    env.update({"ENJAMBRE_DIR": str(obra), "HOME": str(casa)})
+    env.update({"ENJAMBRE_DIR": str(obra), "HOME": str(casa), "USERPROFILE": str(casa)})
     r = subprocess.run([sys.executable, "-c", code], cwd=RAIZ, env=env, capture_output=True, text=True, timeout=60)
     assert r.stdout.strip() == "deepseek-flash sk-global", r.stderr
 
@@ -464,13 +466,13 @@ def test_llave_global_gana_al_env_de_la_app(tmp_path):
     (casa / ".enjambre.env").write_text("DEEPSEEK_API_KEY=sk-buena\nENJAMBRE=deepseek\n")
     (app / ".env").write_text("DEEPSEEK_API_KEY=sk-vieja\nOPENROUTER_API_KEY=sk-or-de-la-app\n")
     # la llave vieja de la app no gana, y la de OpenRouter de la app no es "propia"
-    assert _importar({"HOME": str(casa), "ENJAMBRE_DIR": str(app)}) == "sk-buena deepseek False"
+    assert _importar({"HOME": str(casa), "USERPROFILE": str(casa), "ENJAMBRE_DIR": str(app)}) == "sk-buena deepseek False"
 
 
 def test_lo_exportado_en_la_terminal_gana_a_todo(tmp_path):
     casa = tmp_path / "casa"; casa.mkdir()
     (casa / ".enjambre.env").write_text("DEEPSEEK_API_KEY=sk-archivo\n")
-    out = _importar({"HOME": str(casa), "ENJAMBRE_DIR": str(tmp_path), "DEEPSEEK_API_KEY": "sk-terminal"})
+    out = _importar({"HOME": str(casa), "USERPROFILE": str(casa), "ENJAMBRE_DIR": str(tmp_path), "DEEPSEEK_API_KEY": "sk-terminal"})
     assert out.startswith("sk-terminal")
 
 
@@ -500,7 +502,7 @@ def test_filename_con_carpetas_se_aplana_en_el_resumen(nucleo, monkeypatch, caps
     asyncio.run(s.run())
     salida = capsys.readouterr().out
     assert (s.ship_dir / "page.tsx").exists()
-    assert "artifacts/page.tsx" in salida and "artifacts/src/" not in salida
+    assert os.path.join("artifacts", "page.tsx") in salida and os.path.join("artifacts", "src") not in salida
 
 
 def test_plan_desde_subcarpeta_usa_la_raiz_del_proyecto(nucleo, monkeypatch, tmp_path):
@@ -541,3 +543,43 @@ def test_plan_malo_da_una_linea_no_un_traceback(nucleo, monkeypatch, tmp_path, c
     with pytest.raises(SystemExit) as fin:
         nucleo.cli()
     assert pista in str(fin.value.code)
+
+
+# ── Windows: cp1252 por defecto en archivos y en la salida en tubería ─────────
+
+def test_toda_lectura_y_escritura_dice_utf8():
+    import glob, re as _re
+    malas = []
+    for ruta in glob.glob(os.path.join(RAIZ, "enjambre", "*.py")):
+        for n, linea in enumerate(open(ruta, encoding="utf-8"), 1):
+            if _re.search(r"\.(read_text|write_text)\(|\.open\(|NamedTemporaryFile\(|text=True", linea) \
+                    and "encoding=" not in linea and "webbrowser" not in linea:
+                malas.append(f"{os.path.basename(ruta)}:{n}")
+    assert not malas, f"sin encoding='utf-8' (en Windows sería cp1252): {malas}"
+
+
+def test_entregable_con_emoji_y_acentos_sobrevive(nucleo, monkeypatch):
+    texto = "# Precios ✅\n\nPlan Pro: 19 € al mes. Año, niño, señal. 💸\n" * 3
+
+    async def llm(*a, **k):
+        return texto
+
+    monkeypatch.setattr(nucleo, "llm", llm)
+    s = nucleo.Swarm("documento de precios con acentos y emoji")
+    s.cached_plan = [{"id": "a", "prompt": "p", "deps": [], "filename": "precios.md"}]
+    s.ensamblar = False
+    asyncio.run(s.run())
+    assert (s.ship_dir / "precios.md").read_text(encoding="utf-8") == texto
+
+
+def test_salida_en_tuberia_no_revienta_con_emoji(tmp_path):
+    # PYTHONIOENCODING=cp1252 imita la consola de Windows con la salida en tubería
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("ENJAMBRE", "DEEPSEEK", "OPENROUTER"))}
+    env.update({"ENJAMBRE_DIR": str(tmp_path), "HOME": str(tmp_path), "USERPROFILE": str(tmp_path), "PYTHONIOENCODING": "cp1252",
+                "DEEPSEEK_API_KEY": "sk-prueba"})
+    plan = tmp_path / "plan.json"
+    plan.write_text("{no es json", encoding="utf-8")
+    r = subprocess.run([sys.executable, "-c", "import enjambre.nucleo as n; n.cli()", "--plan", str(plan)],
+                       cwd=RAIZ, env=env, capture_output=True, timeout=60)
+    salida = r.stderr.decode("utf-8", "replace")
+    assert "UnicodeEncodeError" not in salida and "⛔" in salida, salida[-300:]

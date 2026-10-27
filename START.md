@@ -15,9 +15,26 @@ Your Claude Pro limit lasts much longer.
 | GitHub account | <https://github.com> (Vercel deploys from GitHub) |
 | Vercel account | <https://vercel.com> (sign in with GitHub) |
 | Supabase account | <https://supabase.com> (sign in with GitHub) |
-| A Mac, Linux, or Windows with WSL | |
+| Windows 10/11, Mac, or Linux | |
 
 ## Step 1: Install the swarm
+
+### Windows
+
+1. Push the **Windows** key, write `powershell`, and push Enter. A blue or black window opens.
+2. Copy this line, paste it (right-click pastes), and push Enter:
+
+   ```powershell
+   powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/zsoist/SWARMS/main/instalar.ps1 | iex"
+   ```
+
+3. If Windows asks "Do you want to allow this app to make changes?" for **Git**, click **Yes**. Claude needs Git.
+4. When it asks, paste the DeepSeek key and push Enter. The key does not show. This is correct.
+5. At the end you see `[OK] Ready.`
+6. **Quit Claude completely:** right-click the Claude icon near the clock (system tray), then click **Quit**. Open Claude again.
+   If you only close the window, Claude keeps running and does not see the new skill.
+
+### Mac or Linux
 
 1. Open the Terminal app.
 2. Copy this line, paste it, and push Enter:
@@ -27,10 +44,13 @@ Your Claude Pro limit lasts much longer.
    ```
 
 3. When it asks, paste the DeepSeek key and push Enter. The key does not show. This is correct.
-4. At the end you see `✅ deepseek-flash → 'ok'` and `✅ Ready.`
-5. **Quit Claude Desktop completely (Cmd+Q) and open it again.** Claude reads the new skill only when it starts.
+4. At the end you see `✅ Ready.`
+5. **Quit Claude completely (Cmd+Q) and open it again.** Claude reads the new skill only when it starts.
 
-If you see `⛔`, read the line under it. Most of the time the key is wrong or the DeepSeek account has no balance.
+### If it fails
+
+Read the red line (`[X]` or `⛔`). Most of the time the key is wrong or the DeepSeek account has no balance.
+Run the same line again: you can paste a new key, and the other steps do not repeat their work.
 
 ## Step 2: Make two Supabase projects
 
@@ -115,7 +135,7 @@ After each swarm run, Claude shows the cost (for example `deepseek $0.02`).
 |---|---|
 | `⛔ DeepSeek 401` | The key is wrong. Edit `~/.enjambre.env`. |
 | `⛔ DeepSeek 402` | No balance. Add balance at <https://platform.deepseek.com>. |
-| Claude does not use the swarm | Write "use the enjambre skill". If it says it does not know the skill, quit Claude (Cmd+Q) and open it again. |
+| Claude does not use the swarm | Write "use the enjambre skill". If it says it does not know the skill, quit Claude completely (Windows: tray icon → Quit; Mac: Cmd+Q) and open it again. |
 | `command not found: enjambre` | Tell Claude: "use ~/.local/bin/enjambre". |
 | Claude asks permission for each step | Set the selector to **Accept edits**. |
 | You reached the Pro limit | Wait for the reset (the usage ring shows when), or switch to `opusplan`. |

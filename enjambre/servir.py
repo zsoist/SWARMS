@@ -47,7 +47,7 @@ def resumen(d):
                           f"{h[:2]}:{h[2:4]}")
     except Exception:
         info["cuando"] = d.name
-    for linea in (d / "swarm.jsonl").read_text(errors="ignore").splitlines():
+    for linea in (d / "swarm.jsonl").read_text(encoding="utf-8", errors="ignore").splitlines():
         try:
             e = json.loads(linea)
         except Exception:
@@ -85,7 +85,7 @@ def _feed():
                 tzinfo=_dt.timezone.utc)
         except ValueError:
             base = _dt.datetime.now(_dt.timezone.utc)
-        for n, linea in enumerate(jl.read_text(errors="ignore").splitlines()):
+        for n, linea in enumerate(jl.read_text(encoding="utf-8", errors="ignore").splitlines()):
             try:
                 p = json.loads(linea)
             except json.JSONDecodeError:

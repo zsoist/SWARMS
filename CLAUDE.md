@@ -19,7 +19,8 @@ node ejemplos/banco_proveedores.mjs <model> <prompt.txt> <prov...>   # measure r
 | `enjambre/nucleo.py` | Fleets, model calls, plan, workers, checks, CLI. |
 | `kit/skills/enjambre/SKILL.md` | The skill that tells Claude Code when and how to use the swarm. The installer copies it. |
 | `kit/CLAUDE.global.md` | The short rule that the installer adds to `~/.claude/CLAUDE.md`. |
-| `instalar.sh` | One-command installer. It downloads the files above from `main`. |
+| `instalar.sh` | One-command installer for macOS and Linux. It downloads the files above from `main`. |
+| `instalar.ps1` | The same installer for Windows (PowerShell 5.1 and 7). It also installs Git for Windows. |
 | `tests/test_glm.py` | Tests without network. One test for each bug that happened. |
 
 ## Rules. Each rule comes from a real failure.
@@ -49,6 +50,10 @@ node ejemplos/banco_proveedores.mjs <model> <prompt.txt> <prov...>   # measure r
   Before you change `order`/`ignore`, measure with `ejemplos/banco_proveedores.mjs`.
 - **The swarm has its own key** (`ENJAMBRE_OPENROUTER_KEY`). A shared key closed the daily limit of a public app.
 - **Secrets only in `.env` or `~/.enjambre.env`.** This repo is public.
+- **UTF-8 in every file and console operation.** Windows uses cp1252 by default: an emoji or `€` in a result
+  stopped the run. Each `read_text`/`write_text`/`open` says `encoding="utf-8"`; `cli()` sets UTF-8 output. A test checks this.
+- **`instalar.ps1` is ASCII only, and the files that it writes have no BOM.** PowerShell 5.1 reads scripts as ANSI,
+  and a BOM breaks the first key of `.enjambre.env`. CI runs it on Windows.
 - **The installer must be safe to run again.** Each step checks before it changes a file.
   It never replaces a user's key or model setting.
 - **Each fix comes with a test in `tests/`.** The test fails with the bug and passes without it.
