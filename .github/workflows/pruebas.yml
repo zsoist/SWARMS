@@ -19,3 +19,5 @@ jobs:
       - run: uv run --python ${{ matrix.python }} --with pytest pytest -q
       - name: el comando arranca y explica
         run: uv run --python ${{ matrix.python }} enjambre --help
+      - name: el instalador es bash válido
+        run: bash -n instalar.sh
