@@ -1170,7 +1170,11 @@ def cli():
     if sys.argv[1] == "--check":
         # Una llamada mínima: confirma llave, flota y ruta antes de gastar en serio.
         t0 = time.monotonic()
-        out = asyncio.run(llm("Reply with one word: ok", thinking="none"))
+        try:
+            out = asyncio.run(llm("Reply with one word: ok", thinking="none"))
+        except Exception as e:
+            # Una línea, no un traceback: quien instala necesita la causa, no la pila.
+            sys.exit(f"⛔ {WORKER_MODEL}: {str(e)[:300]}")
         ok = bool(out.strip())
         print(f"{'✅' if ok else '⛔'} {WORKER_MODEL} → {out.strip()[:40]!r} "
               f"({time.monotonic() - t0:.1f} s · {budget.line()})")

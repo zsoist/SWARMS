@@ -349,3 +349,14 @@ def test_check_hace_una_sola_llamada(nucleo_ds, monkeypatch, capsys):
         nucleo_ds.cli()
     assert fin.value.code == 0 and len(llamadas) == 1
     assert "deepseek-flash" in capsys.readouterr().out
+
+
+def test_check_con_llave_mala_da_una_linea_clara(nucleo_ds, monkeypatch):
+    async def falla(**kw):
+        raise ValueError("Error code: 401 - Authentication Fails")
+
+    monkeypatch.setattr(nucleo_ds.deepseek.chat.completions, "create", falla)
+    monkeypatch.setattr(sys, "argv", ["enjambre", "--check"])
+    with pytest.raises(SystemExit) as fin:
+        nucleo_ds.cli()
+    assert "401" in str(fin.value.code) and "deepseek-flash" in str(fin.value.code)
