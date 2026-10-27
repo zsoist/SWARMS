@@ -28,7 +28,7 @@ def cargar_veredictos():
     """Junta los veredictos de Jev de todas las corridas y de la bitácora."""
     v = []
     for f in sorted(RAIZ.glob("runs/*/swarm.jsonl")):
-        for linea in f.read_text(errors="ignore").splitlines():
+        for linea in f.read_text(encoding="utf-8", errors="ignore").splitlines():
             try:
                 e = json.loads(linea)
             except Exception:
@@ -39,7 +39,7 @@ def cargar_veredictos():
                           "accion": e.get("action")})
     bit = RAIZ / "orchestrator" / "jev_gate.jsonl"
     if bit.exists():
-        for linea in bit.read_text(errors="ignore").splitlines():
+        for linea in bit.read_text(encoding="utf-8", errors="ignore").splitlines():
             try:
                 e = json.loads(linea)
             except Exception:
@@ -51,7 +51,7 @@ def cargar_veredictos():
 
 
 def informe():
-    et = json.loads(ETIQUETAS.read_text()) if ETIQUETAS.exists() else {"casos": []}
+    et = json.loads(ETIQUETAS.read_text(encoding="utf-8")) if ETIQUETAS.exists() else {"casos": []}
     casos = et["casos"]
     if not casos:
         print("Sin casos etiquetados todavía. Corre con --etiquetar.")
@@ -109,7 +109,7 @@ def informe():
 
 def etiquetar():
     """Etiquetado interactivo: tú dices si cada salida era buena de verdad."""
-    et = json.loads(ETIQUETAS.read_text()) if ETIQUETAS.exists() else {"casos": []}
+    et = json.loads(ETIQUETAS.read_text(encoding="utf-8")) if ETIQUETAS.exists() else {"casos": []}
     vistos = {(c["fuente"], c["id"]) for c in et["casos"]}
     pendientes = [v for v in cargar_veredictos()
                   if (v["fuente"], v["id"]) not in vistos][:20]
@@ -132,7 +132,7 @@ def etiquetar():
         et["casos"].append({**v, "juez_aprobo": bool(aprobo),
                             "realmente_bueno": r == "s",
                             "tipo": input("    tipo de tarea: ").strip() or "sin tipo"})
-        ETIQUETAS.write_text(json.dumps(et, ensure_ascii=False, indent=1))
+        ETIQUETAS.write_text(json.dumps(et, ensure_ascii=False, indent=1), encoding="utf-8")
     print(f"\nGuardado en {ETIQUETAS}")
 
 

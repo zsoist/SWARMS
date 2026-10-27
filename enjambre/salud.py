@@ -32,7 +32,7 @@ def _leer_config():
                  Path(__file__).resolve().parent.parent / "orchestrator" / "swarm.py"):
         if not ruta.exists():
             continue
-        txt = ruta.read_text(errors="ignore")
+        txt = ruta.read_text(encoding="utf-8", errors="ignore")
         flota = os.environ.get("ENJAMBRE", "glm").lower()
         m = re.search(r'"' + re.escape(flota) + r'":\s*\("([^"]+)",\s*"([^"]+)"\)', txt)
         if m:
@@ -157,7 +157,7 @@ def _gastado():
     total, corridas = 0.0, 0
     for log in (raiz / "runs").glob("*-swarm/swarm.jsonl"):
         gasto = None
-        for linea in log.read_text(errors="ignore").splitlines():
+        for linea in log.read_text(encoding="utf-8", errors="ignore").splitlines():
             try:
                 e = json.loads(linea)
             except Exception:

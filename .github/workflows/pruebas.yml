@@ -21,3 +21,41 @@ jobs:
         run: uv run --python ${{ matrix.python }} enjambre --help
       - name: el instalador es bash válido
         run: bash -n instalar.sh
+
+  # Windows: el hermano usa Windows. cp1252 por defecto, USERPROFILE en vez de HOME,
+  # PowerShell 5.1 y la terminal de Claude es Git Bash con la salida en tubería.
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+      - name: pruebas en Windows
+        run: uv run --with pytest pytest -q
+      - name: instalar.ps1 de punta a punta (llave falsa → el 401 real de DeepSeek)
+        if: github.event_name == 'pull_request' || github.ref_name == 'main'
+        shell: powershell
+        env:
+          ENJAMBRE_REF: ${{ github.head_ref || github.ref_name }}
+          DEEPSEEK_API_KEY: sk-falsa-de-ci
+          ENJAMBRE_CI: "1"
+        run: |
+          $out = powershell -NoProfile -ExecutionPolicy Bypass -File .\instalar.ps1 *>&1 | Out-String
+          Write-Host $out
+          if ($out -notmatch 'DeepSeek 401') { throw 'no llegó a la API de DeepSeek' }
+          if ($out -match 'UnicodeEncodeError|Traceback') { throw 'traceback en Windows' }
+          foreach ($f in "$HOME\.enjambre.env", "$HOME\.claude\skills\enjambre\SKILL.md", "$HOME\.claude\CLAUDE.md", "$HOME\.claude\settings.json") {
+            if (-not (Test-Path $f)) { throw "falta $f" }
+          }
+          $bytes = [IO.File]::ReadAllBytes("$HOME\.enjambre.env")
+          if ($bytes[0] -eq 0xEF) { throw '.enjambre.env tiene BOM: rompe la primera clave' }
+          $global:LASTEXITCODE = 0
+      - name: Git Bash como la terminal de Claude (salida en tubería)
+        if: github.event_name == 'pull_request' || github.ref_name == 'main'
+        shell: bash
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          out=$(enjambre --check 2>&1 | tail -n 5) || true
+          echo "$out"
+          echo "$out" | grep -q "DeepSeek 401"
+          if echo "$out" | grep -q "UnicodeEncodeError\|Traceback"; then exit 1; fi

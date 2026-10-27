@@ -6,9 +6,17 @@ It is one command. You can use it from a terminal, from Claude Code, or from Cod
 **Main use:** Claude Code on Opus plans the work, and a DeepSeek swarm writes the code.
 Opus tokens go to decisions. DeepSeek tokens go to volume. A Claude Pro plan lasts much longer.
 
-## Install (macOS, Linux, WSL)
+## Install
 
 You need a DeepSeek API key from <https://platform.deepseek.com>.
+
+Windows (PowerShell):
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/zsoist/SWARMS/main/instalar.ps1 | iex"
+```
+
+macOS or Linux:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/zsoist/SWARMS/main/instalar.sh | bash
@@ -18,7 +26,7 @@ The installer:
 
 1. Installs `uv` if it is missing.
 2. Installs the `enjambre` command.
-3. Keeps your key in `~/.enjambre.env` (mode 600, only you can read it).
+3. Keeps your key in `~/.enjambre.env` (Windows: `%USERPROFILE%\.enjambre.env`). On macOS and Linux only you can read it (mode 600).
 4. Installs the `enjambre` skill in `~/.claude/skills/` and a short rule in `~/.claude/CLAUDE.md`.
 5. Sets Claude Code to Opus with medium effort, if no model is set.
 6. Makes one test call (`enjambre --check`).
